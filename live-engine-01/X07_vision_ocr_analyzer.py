@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+# ==============================================================================
+# PROJEK: PS2-RETRO-NOSTALGIA - PEMAMPAT IMEJ & ENJIN VISION/OCR (X07)
+# LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X07_vision_ocr_analyzer.py
+#
+# FUNGSI UTAMA:
+# 1. Memampatkan sebarang gambar (dari laluan fail tempatan, URL HTTP, PIL Image,
+#    atau bait mentah) supaya saiznya WAJIB < 30 KB (sasaran <= 28 KB).
+# 2. Menguatkuasakan had keras maksimum 5 gambar per permintaan kepada projektor
+#    multimodal Qwen3.5-4B-Q4_K_M.gguf + mmproj-F16.gguf.
+# 3. Sokongan Dual-Environment (WSL Tempatan + GitHub Actions HF Cache).
+# 4. Memulangkan hasil analisis objek, teks OCR, dan sudut nostalgia dalam
+#    format JSON berstruktur yang sedia digunakan oleh X08_ps2_persona_writer.py.
+# ==============================================================================
+
+import base64
+import gc
+import importlib
+import json
+import os
+import re
+import sys
+import time
+from io import BytesIO
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import requests
+from PIL import Image
+
+# ------------------------------------------------------------------------------
+# IMPORT KONFIGURASI PROJEK (X01_config)
+# ------------------------------------------------------------------------------
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+for p in [CURRENT_DIR, PROJECT_ROOT]:
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+try:
+    cfg: Any = importlib.import_module("X01_config")
+except Exception:
+    cfg = None
+
+
+# ==============================================================================
+# [BAHAGIAN TUNING MANUAL VISION & PEMAMPATAN] - UBAH NILAI DI SINI JIKA PERLU
+# ==============================================================================
+# 1. Had Pemampatan Imej (Wajib < 30 KB untuk kelajuan & kestabilan projector)
+VISION_HARD_MAX_BYTES: int = 30 * 1024  # 30,720 bait (jangan ubah melebihi 30 KB)
+VISION_TARGET_BYTES: int = int(os.getenv("PS2N_VISION_TARGET_BYTES", str(28 * 1024)))
+VISION_INITIAL_MAX_DIM: int = int(os.getenv("PS2N_VISION_MAX_DIM", "512"))
+VISION_INITIAL_QUALITY: int = int(os.getenv("PS2N_VISION_INIT_QUALITY", "78"))
+VISION_MAX_IMAGES_PER_REQ: int = 5     # Had keras maksimum 5 gambar per request
+
+# 2. Kawalan Inferens Multimodal (Qwen3.5-4B + mmproj-F16)
+VISION_TEMPERATURE: float = float(os.getenv("PS2N_VISION_TEMP", "0.20"))
+VISION_TOP_P: float = float(os.getenv("PS2N_VISION_TOP_P", "0.90"))
+VISION_MAX_TOKENS: int = int(os.getenv("PS2N_VISION_MAX_TOKENS", "768"))
+VISION_N_CTX: int = int(os.getenv("PS2N_VISION_N_CTX", "4096"))
+VISION_N_THREADS: int = int(os.getenv("PS2N_VISION_N_THREADS", str(min(4, max(3, os.cpu_count() or 4)))))
+VISION_N_BATCH: int = int(os.getenv("PS2N_VISION_N_BATCH", "512"))
+VISION_KV_CACHE_TYPE: int = int(os.getenv("PS2N_VISION_KV_CACHE_TYPE", "8"))
+VISION_FLASH_ATTN: bool = os.getenv("PS2N_VISION_FLASH_ATTN", "true").lower() in ("1", "true", "yes")
+
+# 3. Rujukan Fail GGUF Fallback untuk GitHub Actions
+HF_DEFAULT_REPO_ID: str = "unsloth/Qwen3.5-4B-GGUF"
+HF_DEFAULT_MODEL_FILE: str = "Qwen3.5-4B-Q4_K_M.gguf"
+HF_DEFAULT_MMPROJ_FILE: str = "mmproj-F16.gguf"
+# ==============================================================================
+
+
+def resolve_vision_model_files() -> Tuple[str, str, str]:
+    """
+    Mengesan laluan model GGUF dan mmproj-F16 sama ada di cakera tempatan WSL
+    atau melalui cache Hugging Face Hub apabila dijalankan di GitHub Actions.
+    Mengembalikan (model_path, mmproj_path, source_mode).
+    """
+    repo_id = HF_DEFAULT_REPO_ID
+    model_file = HF_DEFAULT_MODEL_FILE
+    mmproj_file = HF_DEFAULT_MMPROJ_FILE
+    local_model: Optional[Path] = None
+    local_mmproj: Optional[Path] = None
+
+    if cfg is not None and hasattr(cfg, "resolve_gguf_paths"):
+        info = cfg.resolve_gguf_paths()
+        repo_id = info.get("repo_id", repo_id)
+        if info.get("model_path"):
+            local_model = Path(info["model_path"])
+            model_file = local_model.name or model_file
+        if info.get("mmproj_path"):
+            local_mmproj = Path(info["mmproj_path"])
+            mmproj_file = local_mmproj.name or mmproj_file
+
+    local_dir = Path(os.getenv("PS2N_LOCAL_GGUF_DIR", "/home/braderdin/X-HF-model-gguf"))
+    if local_model is None:
+        local_model = local_dir / model_file
+    if local_mmproj is None:
+        local_mmproj = local_dir / mmproj_file
+
+    if (
+        local_model.exists()
+        and local_mmproj.exists()
+        and local_model.stat().st_size > 100 * 1024 * 1024
+        and local_mmproj.stat().st_size > 50 * 1024 * 1024
+    ):
+        return str(local_model), str(local_mmproj), "LOCAL_DISK"
+
+    # Mod GitHub Actions / Cloud: Muat turun melalui Hugging Face Hub Cache
+    hf_hub: Any = importlib.import_module("huggingface_hub")
+    hf_hub_download: Any = getattr(hf_hub, "hf_hub_download")
+    token = os.getenv("HF_TOKEN") or None
+
+    cached_model = hf_hub_download(repo_id=repo_id, filename=model_file, token=token)
+    cached_mmproj = hf_hub_download(repo_id=repo_id, filename=mmproj_file, token=token)
+    return str(cached_model), str(cached_mmproj), "HF_HUB_CACHE"
+
+
+def compress_image_under_30kb(
+    source: Union[str, Path, bytes, Image.Image],
+    save_path: Optional[Union[str, Path]] = None,
+    target_bytes: int = VISION_TARGET_BYTES,
+    initial_max_dim: int = VISION_INITIAL_MAX_DIM,
+    initial_quality: int = VISION_INITIAL_QUALITY,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Memampatkan satu imej supaya saiz failnya WAJIB < 30 KB (sasaran <= 28 KB)
+    sambil mengekalkan ketajaman teks OCR dan subjek utama.
+    Menerima:
+      - Laluan fail tempatan (str / Path)
+      - URL imej HTTP/HTTPS (str)
+      - Bait mentah (bytes)
+      - Objek PIL.Image.Image
+    """
+    try:
+        raw_size = 0
+        img: Image.Image
+
+        if isinstance(source, Image.Image):
+            img = source.copy()
+        elif isinstance(source, bytes):
+            raw_size = len(source)
+            img = Image.open(BytesIO(source))
+        elif isinstance(source, (str, Path)):
+            src_str = str(source)
+            if src_str.startswith(("http://", "https://")):
+                resp = requests.get(src_str, timeout=25)
+                if resp.status_code != 200 or not resp.content:
+                    return False, {"error": f"Gagal muat turun URL (HTTP {resp.status_code})"}
+                raw_size = len(resp.content)
+                img = Image.open(BytesIO(resp.content))
+            else:
+                p = Path(src_str)
+                if not p.exists():
+                    return False, {"error": f"Fail imej tidak ditemui: {p}"}
+                raw_size = p.stat().st_size
+                img = Image.open(p)
+        else:
+            return False, {"error": "Jenis input imej tidak disokong."}
+
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        img.thumbnail((initial_max_dim, initial_max_dim), Image.Resampling.LANCZOS)
+
+        safe_target = min(target_bytes, VISION_HARD_MAX_BYTES - 512)
+        quality = initial_quality
+        best_buf: Optional[bytes] = None
+
+        while True:
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            best_buf = data
+
+            if len(data) <= safe_target:
+                break
+
+            if quality > 22:
+                quality -= 8
+            else:
+                new_w = max(160, int(img.width * 0.80))
+                new_h = max(160, int(img.height * 0.80))
+                if new_w == img.width and new_h == img.height:
+                    break
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                quality = 55
+
+        if not best_buf or len(best_buf) >= VISION_HARD_MAX_BYTES:
+            return False, {"error": f"Gagal memampat imej di bawah 30 KB ({len(best_buf or b'')} B)"}
+
+        saved_to = ""
+        if save_path is not None:
+            out_p = Path(save_path)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_bytes(best_buf)
+            saved_to = str(out_p)
+
+        b64_str = base64.b64encode(best_buf).decode("utf-8")
+        return True, {
+            "saved_path": saved_to,
+            "raw_kb": round(raw_size / 1024, 2) if raw_size > 0 else 0.0,
+            "compressed_bytes": len(best_buf),
+            "compressed_kb": round(len(best_buf) / 1024, 2),
+            "dimensions": f"{img.width}x{img.height}",
+            "quality": quality,
+            "data_url": f"data:image/jpeg;base64,{b64_str}",
+        }
+    except Exception as exc:
+        return False, {"error": str(exc)}
+
+
+def load_vision_chat_handler(mmproj_path: str) -> Tuple[Any, str]:
+    """Memilih kelas chat handler multimodal yang serasi dalam llama-cpp-python."""
+    chat_fmt: Any = importlib.import_module("llama_cpp.llama_chat_format")
+    candidates = [
+        "Qwen3VLChatHandler",
+        "Qwen25VLChatHandler",
+        "Qwen2VLChatHandler",
+        "Llava15ChatHandler",
+    ]
+    last_err = ""
+    for handler_name in candidates:
+        handler_cls = getattr(chat_fmt, handler_name, None)
+        if handler_cls is not None:
+            try:
+                handler = handler_cls(clip_model_path=mmproj_path, verbose=False)
+                return handler, handler_name
+            except Exception as exc:
+                last_err = f"{handler_name}: {exc}"
+    raise RuntimeError(f"Tiada vision chat handler serasi ditemui ({last_err})")
+
+
+class VisionOCRAnalyzer:
+    """
+    Enjin pemampatan imej (< 30 KB) & analisis multimodal Vision + OCR
+    berasaskan Qwen3.5-4B-Q4_K_M.gguf + mmproj-F16.gguf.
+    """
+
+    def __init__(self) -> None:
+        self._llm: Any = None
+        self._chat_handler: Any = None
+        self._handler_name: str = ""
+        self._source_mode: str = ""
+        self._load_seconds: float = 0.0
+
+    def ensure_loaded(
+        self,
+        n_ctx: int = VISION_N_CTX,
+        n_threads: int = VISION_N_THREADS,
+        n_batch: int = VISION_N_BATCH,
+        kv_cache_type: int = VISION_KV_CACHE_TYPE,
+        flash_attn: bool = VISION_FLASH_ATTN,
+    ) -> Any:
+        if self._llm is not None:
+            return self._llm
+
+        model_path, mmproj_path, source_mode = resolve_vision_model_files()
+        llama_mod: Any = importlib.import_module("llama_cpp")
+        Llama: Any = getattr(llama_mod, "Llama")
+
+        t0 = time.perf_counter()
+        chat_handler, handler_name = load_vision_chat_handler(mmproj_path)
+
+        try:
+            llm: Any = Llama(
+                model_path=model_path,
+                chat_handler=chat_handler,
+                n_ctx=n_ctx,
+                n_threads=n_threads,
+                n_batch=n_batch,
+                type_k=kv_cache_type,
+                type_v=kv_cache_type,
+                flash_attn=flash_attn,
+                verbose=False,
+            )
+        except TypeError:
+            llm = Llama(
+                model_path=model_path,
+                chat_handler=chat_handler,
+                n_ctx=n_ctx,
+                n_threads=n_threads,
+                n_batch=n_batch,
+                verbose=False,
+            )
+
+        self._load_seconds = round(time.perf_counter() - t0, 2)
+        self._chat_handler = chat_handler
+        self._handler_name = handler_name
+        self._source_mode = source_mode
+        self._llm = llm
+        return self._llm
+
+    def unload(self) -> None:
+        """Membebaskan RAM model Vision & projector selepas selesai analisis."""
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
+        if self._chat_handler is not None:
+            del self._chat_handler
+            self._chat_handler = None
+        gc.collect()
+
+    def analyze_images(
+        self,
+        image_sources: List[Union[str, Path, bytes, Image.Image]],
+        save_compressed_dir: Optional[Union[str, Path]] = None,
+        auto_unload: bool = True,
+        temperature: float = VISION_TEMPERATURE,
+        max_tokens: int = VISION_MAX_TOKENS,
+    ) -> Tuple[bool, List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Memampatkan sehingga 5 gambar di bawah 30 KB setiap satu dan menganalisisnya
+        menggunakan Qwen3.5-4B + mmproj-F16.
+        Mengembalikan (status_berjaya, senarai_hasil_gambar, metadata_prestasi).
+        """
+        if not image_sources:
+            return False, [], {"error": "Tiada sumber gambar diberikan."}
+
+        # Kuatkuasakan had maksimum 5 gambar per request
+        capped_sources = image_sources[:VISION_MAX_IMAGES_PER_REQ]
+        compressed_items: List[Dict[str, Any]] = []
+
+        for idx, src in enumerate(capped_sources, 1):
+            out_file = None
+            if save_compressed_dir is not None:
+                out_file = Path(save_compressed_dir) / f"vision_input_{idx:02d}.jpg"
+
+            c_ok, c_info = compress_image_under_30kb(src, save_path=out_file)
+            if not c_ok:
+                return False, [], {"error": f"Gambar #{idx} gagal dimampat <30KB: {c_info.get('error')}"}
+            compressed_items.append(c_info)
+
+        try:
+            llm = self.ensure_loaded()
+
+            prompt_text = (
+                f"You are a visual & OCR analyst for a PlayStation 2 (PS2) & retro gaming archive page in Malaysia.\n"
+                f"Analyze all {len(compressed_items)} attached images in order (Image 1 to Image {len(compressed_items)}).\n"
+                "Return ONLY a valid JSON object with key 'images' containing a list of objects, each having:\n"
+                "- image_number (integer 1..N)\n"
+                "- detected_objects (list of main console, controller, screen, disc, memory card, or gaming hardware)\n"
+                "- ocr_text (any visible brand, game title, button text, label, or 'None')\n"
+                "- is_ps2_relevant (boolean true/false)\n"
+                "- retro_nostalgia_angle (1 short natural sentence in Bahasa Melayu Malaysia describing the scene)\n"
+                "Do not include markdown code fences or extra commentary.\n/no_think"
+            )
+
+            user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+            for item in compressed_items:
+                user_content.append({"type": "image_url", "image_url": {"url": item["data_url"]}})
+
+            t_inf = time.perf_counter()
+            res: Any = llm.create_chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a precise multimodal vision and OCR engine. Output strict valid JSON only.",
+                    },
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=temperature,
+                top_p=VISION_TOP_P,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+            inf_sec = time.perf_counter() - t_inf
+
+            raw_out = str(res["choices"][0]["message"]["content"] or "")
+            cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw_out, flags=re.DOTALL)
+            cleaned = re.sub(r"```json\s*|```\s*", "", cleaned).strip()
+
+            parsed_images: List[Dict[str, Any]] = []
+            json_match = re.search(r"\{[\s\S]*\}", cleaned)
+            if json_match:
+                try:
+                    data_obj = json.loads(json_match.group(0))
+                    parsed_images = data_obj.get("images", [])
+                except Exception:
+                    parsed_images = []
+
+            # Gabungkan maklumat saiz mampat (<30KB) ke dalam setiap rekod hasil
+            for idx, comp in enumerate(compressed_items):
+                if idx < len(parsed_images) and isinstance(parsed_images[idx], dict):
+                    parsed_images[idx]["compressed_kb"] = comp["compressed_kb"]
+                    parsed_images[idx]["dimensions"] = comp["dimensions"]
+                    if comp["saved_path"]:
+                        parsed_images[idx]["saved_path"] = comp["saved_path"]
+
+            usage = res.get("usage", {})
+            comp_tok = int(usage.get("completion_tokens", max(1, len(cleaned.split()))))
+            meta = {
+                "handler": self._handler_name,
+                "source_mode": self._source_mode,
+                "images_processed": len(compressed_items),
+                "max_compressed_kb": max(c["compressed_kb"] for c in compressed_items),
+                "load_sec": self._load_seconds,
+                "inference_sec": round(inf_sec, 2),
+                "completion_tokens": comp_tok,
+                "tok_per_sec": round(comp_tok / inf_sec, 2) if inf_sec > 0 else 0.0,
+            }
+
+            if not parsed_images:
+                meta["raw_output_fallback"] = cleaned[:500]
+                return False, [], meta
+
+            return True, parsed_images, meta
+        finally:
+            if auto_unload:
+                self.unload()
+
+
+# Instans sedia untuk diimport oleh X08_ps2_persona_writer.py & X11_main_pipeline.py
+vision_analyzer = VisionOCRAnalyzer()
+
+
+if __name__ == "__main__":
+    # Ujian pantas kendiri menggunakan sampel gambar dari pool tempatan jika wujud
+    sample_dir = PROJECT_ROOT / "temp" / "test_media_pool_50" / "raw"
+    samples = sorted(sample_dir.glob("*.jpg"))[:2] if sample_dir.exists() else []
+    if samples:
+        ok, results, meta = vision_analyzer.analyze_images(samples, auto_unload=True)
+        print("Status Vision:", ok, "| Meta:", meta)
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+    else:
+        print("Tiada sampel gambar di temp/test_media_pool_50/raw untuk ujian kendiri.")

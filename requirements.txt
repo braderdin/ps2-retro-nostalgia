@@ -1,0 +1,38 @@
+# Core Network & Environment
+httpx>=0.27.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+urllib3>=2.2.0
+certifi
+charset-normalizer>=3.3.2
+idna>=3.7
+six>=1.16.0
+tenacity>=8.2.3
+
+# Cloud Storage & Serverless Databases (Backblaze B2, Upstash Redis & Vector)
+boto3>=1.35.0
+b2sdk>=2.5.0
+upstash-redis>=1.1.0
+upstash-vector>=0.6.0
+
+# Media, Image & Video Engine (PS2 Gameplay Clips, Reels & Thumbnails)
+Pillow>=10.0.0
+moviepy>=2.1.1
+imageio>=2.35.0
+imageio-ffmpeg>=0.5.1
+mutagen>=1.47.0
+pydub>=0.25.1
+numpy>=1.26.0
+
+# Utilities & Terminal Logging
+rich>=13.7.0
+tqdm>=4.66.0
+python-dateutil>=2.9.0.post0
+decorator>=5.1.1
+proglog>=0.1.10
+
+# Local LLM GGUF Engine (Qwen 3.5 4B GGUF)
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+huggingface-hub>=0.28.0
+llama-cpp-python>=0.3.8
+psutil>=5.9.0

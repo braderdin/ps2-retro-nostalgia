@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# folder projek
+text-archive/
+exp/
+.env.local
+key-generate/
