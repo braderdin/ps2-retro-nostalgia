@@ -226,4 +226,5 @@ __marimo__/
 text-archive/
 exp/
 .env.local
+.env.gh.secret
 key-generate/

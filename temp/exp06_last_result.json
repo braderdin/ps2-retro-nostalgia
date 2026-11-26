@@ -1,0 +1,38 @@
+{
+  "created_at_myt": "Khamis, 26 November 2026 (09:08 PM - Waktu Malam)",
+  "run_env": "LOCAL_WSL",
+  "persona_ref": "min",
+  "game_topic": "Need for Speed: Most Wanted",
+  "image_count": 4,
+  "image_names": [
+    "img_043_pexels_7776214.jpg",
+    "img_028_pexels_8885382.jpg",
+    "img_036_pexels_4502978.jpg",
+    "img_050_pexels_7856688.jpg"
+  ],
+  "ocr_visual_summary": "- Gambar 1: Objek=[game_console, controller, screen], Teks OCR=[None], Suasana=[Masa kecil di Malaysia sering diisi dengan permainan video klasik di atas meja makan.]\n- Gambar 2: Objek=[controller, game_card], Teks OCR=[NES], Suasana=[Kontroler NES yang ikonik mengingatkan kepada permainan video yang popular di kalangan kanak-kanak dahulu.]\n- Gambar 3: Objek=[game_console, controller, game_card], Teks OCR=[SUPER NINTENDO], Suasana=[Sistem Super Nintendo adalah salah satu konsol paling popular di Malaysia pada tahun 1990-an.]\n- Gambar 4: Objek=[controller], Teks OCR=[None], Suasana=[Permainan video adalah aktiviti yang sangat popular di kalangan kanak-kanak Malaysia pada zaman itu.]",
+  "story_bm": "Cikgu, gambar tu nampak macam masa kecil dulu di Malaysia bila semua kanak-kanak berkumpul di meja makan untuk main game console lama. Dalam Gambar 1, kita tengang konsol dan controller yang ada layarnya, situasi biasa-biasa saja bila masa itu permainan video jadi aktiviti utama selepas sekolah atau waktu luang. Kemudian dalam Gambar 2 tu ada kontroler NES dengan tulisan jenama jelas, benda ikonik yang sangat dikenali oleh kanak-kanak dulu kerana warnanya kuning cerah dan bentuknya unik di tangan.",
+  "post_caption": "Cikgu, gambar tu nampak macam masa kecil dulu di Malaysia bila semua kanak-kanak berkumpul di meja makan untuk main game console lama. Dalam Gambar 1, kita tengang konsol dan controller yang ada layarnya, situasi biasa-biasa saja bila masa itu permainan video jadi aktiviti utama selepas sekolah atau waktu luang. Kemudian dalam Gambar 2 tu ada kontroler NES dengan tulisan jenama jelas, benda ikonik yang sangat dikenali oleh kanak-kanak dulu kerana warnanya kuning cerah dan bentuknya unik di tangan.\n\nKorang dulu paling kerap layan game apa bila pegang kontroler macam ni? Cer komen kat bawah, min nak baca!\n\n#PS2RetroNostalgia #PS2Malaysia #RetroGaming #NeedforSpeedMostWanted #Nostalgia2000an",
+  "comment_text": "Kalau korang masih simpan konsol PS2 kat rumah dan nak hidupkan balik nostalgia zaman dulu (Memory Card siap save data / Pendrive Plug & Play), boleh tengok kat sini geng:\n👉 https://shopee.com.my/ps2-retro-nostalgia-demo",
+  "fb_post_id": "1439014409296665_122103997911557477",
+  "fb_comment_id": "122103997911557477_1722734936171344",
+  "db_row_id": 1,
+  "vision_metrics": {
+    "handler": "Qwen25VLChatHandler",
+    "source_mode": "LOCAL_DISK",
+    "images_processed": 4,
+    "max_compressed_kb": 26.9,
+    "load_sec": 1.88,
+    "inference_sec": 101.65,
+    "completion_tokens": 382,
+    "tok_per_sec": 3.76
+  },
+  "llm_metrics": {
+    "attempt": 1,
+    "elapsed_sec": 57.47,
+    "completion_tokens": 235,
+    "tok_per_sec": 4.09,
+    "story_chars": 502,
+    "quality_status": "Lulus"
+  }
+}

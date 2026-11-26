@@ -1,0 +1,113 @@
+name: EXP06 - Test Vision OCR & Persona AI FB Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_count:
+        description: "Bilangan gambar (0 = rawak 1-4, atau pilih 1, 2, 3, 4)"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+      dry_run:
+        description: "Dry run sahaja tanpa post ke Facebook?"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  run-exp06-fb-persona-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 1. Nyahsekat DNS Runner (Guna Cloudflare 1.1.1.1 & Google 8.8.8.8)
+        run: |
+          sudo sed -i '1inameserver 1.1.1.1\nnameserver 8.8.8.8' /etc/resolv.conf
+          head -n 4 /etc/resolv.conf
+
+      - name: 2. Peruntukan Ruang SSD Runner (Kosongkan ~15GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          df -h
+
+      - name: 🛠️ Bina 10GB Swap Memory di Runner
+        run: |
+          echo "=== MEMORI ASAL RUNNER ==="
+          free -h
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo sysctl vm.swappiness=60
+          echo "=== MEMORI SELEPAS 10GB SWAP DIAKTIFKAN ==="
+          free -h
+
+      - name: Checkout Repositori
+        uses: actions/checkout@v4
+
+      - name: Sediakan Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pulihkan / Simpan Cache Hugging Face GGUF & VLM
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-hf-qwen35-4b-q4km-v1
+          restore-keys: |
+            ${{ runner.os }}-hf-qwen35-4b-q4km-
+
+      - name: Pulihkan / Simpan Cache Pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-qwen35-test-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-qwen35-test-
+
+      - name: Pasang Kebergantungan Python & llama-cpp-python (CPU)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "llama-cpp-python>=0.3.8" "huggingface-hub>=0.28.0"
+
+      - name: Jalankan Ujian EXP06 (Vision OCR -> Persona AI -> Facebook Post & Komen)
+        env:
+          B2_ACCOUNTS_JSON: ${{ secrets.B2_ACCOUNTS_JSON }}
+          REDIS_ACCOUNTS_JSON: ${{ secrets.REDIS_ACCOUNTS_JSON }}
+          VECTOR_ACCOUNTS_JSON: ${{ secrets.VECTOR_ACCOUNTS_JSON }}
+          PS2N_FB_APP_ID: ${{ secrets.PS2N_FB_APP_ID }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_FB_PAGE_ID: ${{ secrets.PS2N_FB_PAGE_ID }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_GRAPH_VERSION: ${{ secrets.PS2N_FB_GRAPH_VERSION }}
+          CF_WORKER_B2_PROXY_STORAGE: ${{ secrets.CF_WORKER_B2_PROXY_STORAGE }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+          PS2N_UNSPLASH_ACCESS_KEY: ${{ secrets.PS2N_UNSPLASH_ACCESS_KEY }}
+          PS2N_PEXELS_API_KEY: ${{ secrets.PS2N_PEXELS_API_KEY }}
+        run: |
+          DRY_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          python3 exp/exp06_vision_persona_fb_test.py --count "${{ inputs.image_count }}" $DRY_FLAG
+
+      - name: Muat Naik Log Pratonton & Memori Sementara EXP06
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp06-fb-test-artifacts
+          path: |
+            temp/exp06_last_result.json
+            temp/exp06_fb_memory_temp.db
+          if-no-files-found: ignore
