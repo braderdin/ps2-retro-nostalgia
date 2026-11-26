@@ -224,7 +224,6 @@ __marimo__/
 
 # folder projek
 text-archive/
-exp/
 .env.local
 .env.gh.secret
 key-generate/
