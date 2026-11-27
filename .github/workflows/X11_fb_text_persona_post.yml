@@ -103,16 +103,35 @@ jobs:
           fi
           eval python3 live-engine-01/X11_fb_text_persona_poster.py $EXTRA_ARGS
 
-      # ========================================================================
-      # [SLOT STEP MASA HADAPAN]
-      # Langkah Instagram atau Laporan Notifikasi Telegram akan ditambah di sini
-      # selepas Step 9 selesai menerbitkan hantaran ke Facebook.
-      # ========================================================================
+      - name: 10. Hantar Laporan Siaran atau Amaran Ralat ke Telegram Channel (X12)
+        if: always()
+        env:
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+        run: |
+          if [ "${{ steps.fb_text_post.outcome }}" = "success" ]; then
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status success \
+              --report-json temp/x11_last_text_post.json \
+              --platform "Facebook Page (Text-Only)" \
+              --channel default
+          else
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status failure \
+              --report-json temp/x11_last_text_post.json \
+              --platform "Facebook Page (Text-Only)" \
+              --channel default \
+              --also-dm \
+              --error-step "fb_text_post (outcome=${{ steps.fb_text_post.outcome }}, job=${{ job.status }})"
+          fi
 
-      - name: 10. Muat Naik Laporan JSON Hantaran X11
+      - name: 11. Muat Naik Laporan JSON Hantaran X11
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: x11-fb-text-post-report
           path: temp/x11_last_text_post.json
+          retention-days: 7
           if-no-files-found: ignore
