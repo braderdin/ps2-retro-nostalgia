@@ -5,14 +5,13 @@
 #
 # FUNGSI UTAMA:
 # 1. Klien Singleton berpusat untuk model GGUF Qwen3.5-4B-Q4_K_M.gguf.
-# 2. Blok tetapan TUNING MANUAL di bahagian atas fail (Temperature, Max Tokens,
-#    Top-P, Top-K, Repeat Penalty, Threads, Context, Had Aksara) + sokongan
-#    override melalui pemboleh ubah persekitaran (.env.local / GitHub Secrets).
-# 3. Sokongan Dual-Environment:
-#    - Tempatan (WSL Ubuntu): Membaca terus /home/braderdin/X-HF-model-gguf/.
-#    - GitHub Actions: Muat turun & simpan ke cache Hugging Face Hub secara automatik.
+# 2. Ditala khusus untuk Bahasa Melayu Malaysia yang santai, bersahaja, dan
+#    tidak kaku seperti terjemahan mesin (repeat_penalty=1.08, temp=0.64).
+# 3. Menyuntik panduan gaya bahasa Malaysia semula jadi secara automatik ke
+#    dalam semua panggilan cerita (X11, X13, dan modul masa hadapan).
 # 4. Pembersih output AI: buang tag <think>, buang tajuk/header, buang emoji AI,
-#    tukar istilah Indonesia ke Bahasa Melayu Malaysia, dan potong pada noktah ayat.
+#    tukar istilah Indonesia & frasa terjemahan janggal ke BM tempatan, dan
+#    potong kemas pada penghujung noktah ayat.
 # ==============================================================================
 
 import gc
@@ -40,16 +39,16 @@ except Exception:
 
 
 # ==============================================================================
-# [BAHAGIAN TUNING MANUAL] - UBAH NILAI DI SINI MENGIKUT KEPERLUAN KUALITI & LAJU
+# [BAHAGIAN TUNING MANUAL] - DITALA UNTUK BM SANTAI & SEMULA JADI
 # ==============================================================================
-# 1. Kawalan Kreativiti & Panjang Output
-DEFAULT_TEMPERATURE: float = float(os.getenv("PS2N_LLM_TEMP", "0.70"))
+# 1. Kawalan Kreativiti & Kestabilan Bahasa Melayu (Elak Perkataan Pelik)
+DEFAULT_TEMPERATURE: float = float(os.getenv("PS2N_LLM_TEMP", "0.64"))
 DEFAULT_MAX_TOKENS: int = int(os.getenv("PS2N_LLM_MAX_TOKENS", "768"))
-DEFAULT_TOP_P: float = float(os.getenv("PS2N_LLM_TOP_P", "0.90"))
-DEFAULT_TOP_K: int = int(os.getenv("PS2N_LLM_TOP_K", "35"))
-DEFAULT_REPEAT_PENALTY: float = float(os.getenv("PS2N_LLM_REPEAT_PENALTY", "1.16"))
-DEFAULT_PRESENCE_PENALTY: float = float(os.getenv("PS2N_LLM_PRESENCE_PENALTY", "0.15"))
-DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("PS2N_LLM_FREQUENCY_PENALTY", "0.10"))
+DEFAULT_TOP_P: float = float(os.getenv("PS2N_LLM_TOP_P", "0.88"))
+DEFAULT_TOP_K: int = int(os.getenv("PS2N_LLM_TOP_K", "30"))
+DEFAULT_REPEAT_PENALTY: float = float(os.getenv("PS2N_LLM_REPEAT_PENALTY", "1.08"))
+DEFAULT_PRESENCE_PENALTY: float = float(os.getenv("PS2N_LLM_PRESENCE_PENALTY", "0.05"))
+DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("PS2N_LLM_FREQUENCY_PENALTY", "0.05"))
 
 # 2. Kawalan Perkakasan & Memori (WSL 4 Threads / GitHub Actions Ubuntu Runner)
 DEFAULT_N_CTX: int = int(os.getenv("PS2N_LLM_N_CTX", "4096"))
@@ -70,6 +69,16 @@ HF_DEFAULT_MODEL_FILE: str = "Qwen3.5-4B-Q4_K_M.gguf"
 # ==============================================================================
 
 
+# Panduan gaya bahasa Malaysia semula jadi yang disuntik automatik ke dalam system prompt
+NATURAL_MALAY_STYLE_DIRECTIVE: str = (
+    "\n\n[PANDUAN GAYA BAHASA MALAYSIA WAJIB]:\n"
+    "- Fikir dan tulis terus dalam Bahasa Melayu Malaysia yang santai macam abang-abang bersembang di kedai kopi.\n"
+    "- JANGAN terjemah ayat sumber bahasa asing (English/Perancis/dll.) perkataan demi perkataan; "
+    "ambil maksudnya sahaja dan ceritakan semula guna ayat sendiri yang ringkas dan sedap dibaca.\n"
+    "- Gunakan ayat aktif, terus terang, dan mudah difahami (elakkan struktur ayat berbunga-bunga seperti "
+    "'Ini bukan sekadar X, tapi kita sedang mengembalikan...' atau 'benda mati dalam lemari')."
+)
+
 # Kamus penyingkiran istilah Indonesia -> Bahasa Melayu harian Malaysia
 INDONESIAN_SCRUB_MAP: Dict[str, str] = {
     r"\bbisa\b": "boleh",
@@ -86,11 +95,30 @@ INDONESIAN_SCRUB_MAP: Dict[str, str] = {
     r"\bberantakan\b": "berselerak",
     r"\bcapek\b": "penat",
     r"\buang\b": "duit",
+    r"\blemari\b": "almari",
+    r"\bkayak\b": "macam",
+    r"\bdoang\b": "sahaja",
+    r"\budah\b": "dah",
+    r"\baja\b": "je",
+    r"\bkalo\b": "kalau",
+    r"\bpake\b": "guna",
     r"\bAnda\b": "korang",
     r"\banda\b": "korang",
     r"\bkalian\b": "korang",
     r"\bteman-teman\b": "kawan-kawan",
     r"\bnggak\s+usah\b": "tak payah",
+}
+
+# Pembaikan frasa terjemahan literal kaku & typo biasa model 4B
+AWKWARD_PHRASE_SCRUB_MAP: Dict[str, str] = {
+    r"\bsereis\b": "siri",
+    r"\bkesedih\b": "sedih",
+    r"\bbenda mati\b": "tersadai",
+    r"\bkonsol masa emas\b": "konsol legenda",
+    r"\bpakej keselamatan\b": "sistem sekuriti",
+    r"\bdicantum semasa produksi awal\b": "dipasang terus dari kilang",
+    r"\bteknologi serba digital hari ini\b": "cara moden hari ni",
+    r"\bmenyebabkan keputusasaan\b": "membuatkan ramai buntu",
 }
 
 
@@ -118,7 +146,6 @@ def resolve_text_model_file() -> Tuple[str, str]:
     if local_candidate.exists() and local_candidate.stat().st_size > 100 * 1024 * 1024:
         return str(local_candidate), "LOCAL_DISK"
 
-    # Mod GitHub Actions / Cloud: Tarik dari Hugging Face Hub (guna cache automatik)
     hf_hub: Any = importlib.import_module("huggingface_hub")
     hf_hub_download: Any = getattr(hf_hub, "hf_hub_download")
     cached_path = hf_hub_download(
@@ -155,7 +182,7 @@ def clean_and_scrub_bm_story(
     1. Membuang blok <think>...</think> dan pembungkus markdown.
     2. Menormalkan tanda petik dan sengkang.
     3. Membuang emoji mentah AI dan baris tajuk/header di baris pertama.
-    4. Menggantikan perkataan Indonesia kepada Bahasa Melayu Malaysia.
+    4. Menggantikan perkataan Indonesia & frasa terjemahan kaku ke BM Malaysia.
     5. Memastikan ayat berakhir pada noktah lengkap di bawah had aksara.
     """
     if not raw_text:
@@ -188,6 +215,8 @@ def clean_and_scrub_bm_story(
     if scrub_indonesian:
         for pattern, bm_word in INDONESIAN_SCRUB_MAP.items():
             cleaned = re.sub(pattern, bm_word, cleaned, flags=re.IGNORECASE)
+        for pattern, natural_bm in AWKWARD_PHRASE_SCRUB_MAP.items():
+            cleaned = re.sub(pattern, natural_bm, cleaned, flags=re.IGNORECASE)
 
     # Pastikan berhenti pada tanda noktah/seruan ayat lengkap
     match = re.search(r"^([\s\S]*[.!?])", cleaned.strip())
@@ -294,7 +323,6 @@ class LocalLLMEngine:
                 verbose=False,
             )
         except TypeError:
-            # Fallback jika versi wheel llama_cpp tidak menerima type_k/type_v/flash_attn
             self._llm = Llama(
                 model_path=model_path,
                 n_ctx=n_ctx,
@@ -327,12 +355,21 @@ class LocalLLMEngine:
         presence_penalty: float = DEFAULT_PRESENCE_PENALTY,
         frequency_penalty: float = DEFAULT_FREQUENCY_PENALTY,
         enable_thinking: bool = ENABLE_THINKING,
+        enforce_natural_bm: bool = True,
     ) -> Dict[str, Any]:
         """
         Menjalankan satu panggilan inferens chat dan mengembalikan hasil mentah
         serta metrik prestasi (masa, token, tok/s).
         """
         llm = self.ensure_loaded()
+
+        final_system_prompt = system_prompt.strip()
+        if (
+            enforce_natural_bm
+            and "json" not in final_system_prompt.lower()
+            and "[PANDUAN GAYA BAHASA MALAYSIA WAJIB]" not in final_system_prompt
+        ):
+            final_system_prompt = f"{final_system_prompt}{NATURAL_MALAY_STYLE_DIRECTIVE}"
 
         final_user_prompt = user_prompt.strip()
         if not enable_thinking and not final_user_prompt.endswith("/no_think"):
@@ -341,7 +378,7 @@ class LocalLLMEngine:
         t0 = time.perf_counter()
         res: Any = llm.create_chat_completion(
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": final_system_prompt},
                 {"role": "user", "content": final_user_prompt},
             ],
             temperature=temperature,
@@ -389,8 +426,7 @@ class LocalLLMEngine:
         last_meta: Dict[str, Any] = {}
 
         for attempt in range(1, max_attempts + 1):
-            # Naikkan sedikit temperature pada percubaan ulangan untuk variasi ayat
-            adj_temp = min(0.95, round(temperature + ((attempt - 1) * 0.05), 2))
+            adj_temp = min(0.88, round(temperature + ((attempt - 1) * 0.05), 2))
             inf = self.generate_chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -417,12 +453,10 @@ class LocalLLMEngine:
         return False, "", last_meta
 
 
-# Instans Singleton sedia untuk diimport oleh X08_ps2_persona_writer.py
 llm_engine = LocalLLMEngine()
 
 
 if __name__ == "__main__":
-    # Ujian pantas kendiri apabila fail ini dijalankan terus
     print("Profil Tuning X06:", llm_engine.get_tuning_profile())
     ok, story, meta = llm_engine.generate_bm_story(
         system_prompt=(

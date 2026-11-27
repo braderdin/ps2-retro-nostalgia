@@ -863,12 +863,10 @@ def generate_admin_text_only_post(
 
     # Susun senarai 10 posting terakhir untuk dibaca AI sebelum menulis
     if recent_posts:
-        recent_lines = []
-        for idx, rp in enumerate(recent_posts[:10], 1):
-            snippet = str(rp.get("story_bm", ""))[:135].replace("\n", " ")
-            recent_lines.append(
-                f"{idx}. [Game: {rp.get('game_title', '-')}] {snippet}..."
-            )
+        recent_lines = [
+            f"{idx}. Topik lepas: [Pilar: {rp.get('pillar_id', '-')} | Game: {rp.get('game_title', '-')}]"
+            for idx, rp in enumerate(recent_posts[:10], 1)
+        ]
         recent_10_block = "\n".join(recent_lines)
     else:
         recent_10_block = "Belum ada rekod hantaran terdahulu."
@@ -927,6 +925,25 @@ def generate_admin_text_only_post(
         hashtags = f"#PS2RetroNostalgia #PS2Malaysia #RetroGaming #{slug_tag} #Nostalgia2000an"
         # Kekalkan kapsyen utama tanpa emoji & tanpa simbol pelik
         post_caption = f"{cleaned}\n\n{hashtags}"
+
+        cand_open = re.findall(r"\b[a-z0-9]{3,}\b", cleaned.lower())[:12]
+        cloned_open = False
+        for prev in recent_posts[:10]:
+            prev_open = re.findall(r"\b[a-z0-9]{3,}\b", str(prev.get("story_bm", "")).lower())[:12]
+            if cand_open and prev_open:
+                overlap = len(set(cand_open) & set(prev_open)) / max(1, len(set(cand_open)))
+                if overlap >= 0.35 or cand_open[:4] == prev_open[:4]:
+                    cloned_open = True
+                    break
+        if cloned_open:
+            last_meta = {
+                "attempt": attempt,
+                "elapsed_sec": inf["elapsed_sec"],
+                "tok_per_sec": inf["tok_per_sec"],
+                "story_chars": len(cleaned),
+                "status": "Ditolak: Pembuka ayat terlalu mirip post terdahulu.",
+            }
+            continue
 
         ok_format, fmt_msg = validate_strict_text_only_post(cleaned, post_caption, cal_ctx=cal_ctx)
         if not ok_format:
