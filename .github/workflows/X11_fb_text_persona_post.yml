@@ -1,0 +1,118 @@
+name: X11 - FB Text-Only Persona Auto-Poster (8.15 AM & 8.15 PM MYT)
+
+on:
+  schedule:
+    # 00:15 UTC = 08:15 AM MYT (Waktu Malaysia UTC+8)
+    - cron: "15 0 * * *"
+    # 12:15 UTC = 08:15 PM MYT (Waktu Malaysia UTC+8)
+    - cron: "15 12 * * *"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run sahaja tanpa post ke Facebook?"
+        required: true
+        default: false
+        type: boolean
+      force_game:
+        description: "Tajuk game PS2 pilihan (kosongkan untuk giliran automatik)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  publish-fb-text-persona:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 1. Nyahsekat DNS Runner (Guna Cloudflare 1.1.1.1 & Google 8.8.8.8)
+        run: |
+          sudo sed -i '1inameserver 1.1.1.1\nnameserver 8.8.8.8' /etc/resolv.conf
+          head -n 4 /etc/resolv.conf
+
+      - name: 2. Peruntukan Ruang SSD Runner (Kosongkan ~15GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          df -h
+
+      - name: 3. Bina 10GB Swap Memory di Runner
+        run: |
+          free -h
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo sysctl vm.swappiness=60
+          free -h
+
+      - name: 4. Checkout Repositori & Pangkalan Data SQLite (.db)
+        uses: actions/checkout@v4
+
+      - name: 5. Sediakan Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 6. Pulihkan / Simpan Cache Hugging Face GGUF
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-hf-qwen35-4b-q4km-v1
+          restore-keys: |
+            ${{ runner.os }}-hf-qwen35-4b-q4km-
+
+      - name: 7. Pulihkan / Simpan Cache Pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-qwen35-prod-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-qwen35-prod-
+
+      - name: 8. Pasang Kebergantungan Python & llama-cpp-python (CPU Wheel)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "llama-cpp-python>=0.3.8" "huggingface-hub>=0.28.0"
+
+      - name: 9. Terbit Hantaran Facebook Text-Only & Komen Shopee (X11)
+        id: fb_text_post
+        env:
+          B2_ACCOUNTS_JSON: ${{ secrets.B2_ACCOUNTS_JSON }}
+          REDIS_ACCOUNTS_JSON: ${{ secrets.REDIS_ACCOUNTS_JSON }}
+          VECTOR_ACCOUNTS_JSON: ${{ secrets.VECTOR_ACCOUNTS_JSON }}
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_APP_ID: ${{ secrets.PS2N_FB_APP_ID }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_FB_PAGE_ID: ${{ secrets.PS2N_FB_PAGE_ID }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_GRAPH_VERSION: ${{ secrets.PS2N_FB_GRAPH_VERSION }}
+          CF_WORKER_B2_PROXY_STORAGE: ${{ secrets.CF_WORKER_B2_PROXY_STORAGE }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.force_game }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --game \"${{ inputs.force_game }}\""
+          fi
+          eval python3 live-engine-01/X11_fb_text_persona_poster.py $EXTRA_ARGS
+
+      # ========================================================================
+      # [SLOT STEP MASA HADAPAN]
+      # Langkah Instagram atau Laporan Notifikasi Telegram akan ditambah di sini
+      # selepas Step 9 selesai menerbitkan hantaran ke Facebook.
+      # ========================================================================
+
+      - name: 10. Muat Naik Laporan JSON Hantaran X11
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x11-fb-text-post-report
+          path: temp/x11_last_text_post.json
+          if-no-files-found: ignore

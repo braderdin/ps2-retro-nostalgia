@@ -1,0 +1,29 @@
+{
+  "posted_at_iso": "2026-11-27T18:38:20.830530+08:00",
+  "posted_epoch": 1795775900,
+  "run_env": "LOCAL_WSL",
+  "persona_ref": "min",
+  "pillar_id": "MODCARD_FMCB_OPENTUNA",
+  "game_title": "Grand Theft Auto: San Andreas",
+  "story_bm": "Sudah masuk petang yang agak redup sebab musim hujan ni, memang best nak balik rumah lepak dengan konsol lama tu. Min ingatkan masa dulu main Grand Theft Auto: San Andreas bila fikiran kita masih terdedah pada misi kapal terbang kecil Zero yang buat ramai orang putus asa mencari jalan keluar. Banyak kawan-kawan geng zaman sekolah mula melupakan kenangan manis bermain game jadul itu kerana masalah lens laser di dalam konsol PS2 mereka sudah lemah hingga tak boleh baca CD lagi atau calar. Masalah ini bukan alasan untuk membuang perkakasan berharga ni, sebab ada penyelesaian pintar tanpa perlu membatalkan keaslian mesin tu.",
+  "story_chars": 628,
+  "post_caption": "Sudah masuk petang yang agak redup sebab musim hujan ni, memang best nak balik rumah lepak dengan konsol lama tu. Min ingatkan masa dulu main Grand Theft Auto: San Andreas bila fikiran kita masih terdedah pada misi kapal terbang kecil Zero yang buat ramai orang putus asa mencari jalan keluar. Banyak kawan-kawan geng zaman sekolah mula melupakan kenangan manis bermain game jadul itu kerana masalah lens laser di dalam konsol PS2 mereka sudah lemah hingga tak boleh baca CD lagi atau calar. Masalah ini bukan alasan untuk membuang perkakasan berharga ni, sebab ada penyelesaian pintar tanpa perlu membatalkan keaslian mesin tu.\n\n#PS2RetroNostalgia #PS2Malaysia #RetroGaming #GrandTheftAutoSanAndre #Nostalgia2000an",
+  "story_hash": "f3ae27ed3c0b550f50b255c1f718d131068476812836c5dc6aa349f259a0d762",
+  "shopee_product_code": "SHP_002",
+  "shopee_product_name": "PS2 USB Games Pendrive 32GB Mod Card FMCB OpenTuna PlayStation 2 Full Game Boleh Pilih Custom Laser Rosak",
+  "shopee_url": "https://s.shopee.com.my/2gD2JFQH64",
+  "comment_variant_idx": 4,
+  "comment_text": "⚡ Senang kerja zaman sekarang, cucuk je terus boleh layan game klasik PS2 dengan lancar! Tekan pautan di bawah untuk tengok butiran penuh:\n👉 https://s.shopee.com.my/2gD2JFQH64\n\n📌 Set Lengkap Mod Card FMCB/OpenTuna + PENDRIVE 32GB (5 - 15 game PS2)",
+  "fb_post_id": "DRY_RUN",
+  "fb_comment_id": "DRY_RUN",
+  "vector_shard": 1,
+  "llm_metrics": {
+    "attempt": 1,
+    "elapsed_sec": 75.25,
+    "completion_tokens": 288,
+    "tok_per_sec": 3.83,
+    "story_chars": 628,
+    "status": "Lulus Semantik Vector (Shard #1)",
+    "vector_shard": 1
+  }
+}

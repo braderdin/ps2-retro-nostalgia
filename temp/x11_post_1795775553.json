@@ -1,0 +1,29 @@
+{
+  "posted_at_iso": "2026-11-27T18:32:33.725672+08:00",
+  "posted_epoch": 1795775553,
+  "run_env": "LOCAL_WSL",
+  "persona_ref": "min",
+  "pillar_id": "GAME_NOSTALGIA",
+  "game_title": "Downhill Domination",
+  "story_bm": "Dah masuk petang yang agak redup sebab muson lagi, memang best nak balik rumah lepak dengan konsol lama tu. Min ingatkan masa dulu main Downhill Domination itu sangat bersemangat bila kita sampai kedai game bersama kawan-kawan untuk lumba basikal turun bukit sambil baling botol air dan tendang pihak lawan yang datang dari belakang kita. Game ni boleh jadi lawak paling kecoh di antara pemain kerana mekanik unik tu memang jarang nampak dalam permainan lain zaman. Kenangan masa kanak-kanak bermain PS2 sebenar itu sangat manis bila kita rasa semua game tersebut ada di tangan masing-masing untuk dijana sendiri.",
+  "story_chars": 613,
+  "post_caption": "Dah masuk petang yang agak redup sebab muson lagi, memang best nak balik rumah lepak dengan konsol lama tu. Min ingatkan masa dulu main Downhill Domination itu sangat bersemangat bila kita sampai kedai game bersama kawan-kawan untuk lumba basikal turun bukit sambil baling botol air dan tendang pihak lawan yang datang dari belakang kita. Game ni boleh jadi lawak paling kecoh di antara pemain kerana mekanik unik tu memang jarang nampak dalam permainan lain zaman. Kenangan masa kanak-kanak bermain PS2 sebenar itu sangat manis bila kita rasa semua game tersebut ada di tangan masing-masing untuk dijana sendiri.\n\n#PS2RetroNostalgia #PS2Malaysia #RetroGaming #DownhillDomination #Nostalgia2000an",
+  "story_hash": "7be365eda95f25c0991115bd03bb83f825ba65b7477c0e0ce31de99b45005a81",
+  "shopee_product_code": "SHP_009",
+  "shopee_product_name": "PLAYSTATION 2 GAMES pendrive/hardisk full games",
+  "shopee_url": "https://s.shopee.com.my/AAJ3FW6unJ",
+  "comment_variant_idx": 16,
+  "comment_text": "🌟 Hidupkan semula bunyi boot ikonik PS2 kat TV ruang tamu malam ni! Klik link di bawah untuk tengok kelengkapan PS2 yang siap sedia:\n👉 https://s.shopee.com.my/AAJ3FW6unJ\n\n📌 Pilihan Kapasiti (32GB (5-15 game) hingga 500GB (120-170 game)) — Boleh pilih game sendiri!",
+  "fb_post_id": "1439014409296665_122104753263557477",
+  "fb_comment_id": "122104753263557477_4681504538839998",
+  "vector_shard": 4,
+  "llm_metrics": {
+    "attempt": 1,
+    "elapsed_sec": 81.03,
+    "completion_tokens": 337,
+    "tok_per_sec": 4.16,
+    "story_chars": 613,
+    "status": "Lulus Semantik Vector (Shard #4)",
+    "vector_shard": 4
+  }
+}
