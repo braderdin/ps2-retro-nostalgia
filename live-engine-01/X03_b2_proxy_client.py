@@ -3,19 +3,26 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - KLIEN STORAN B2 VIA CLOUDFLARE PROXY (X03)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X03_b2_proxy_client.py
 #
-# FUNGSI:
-# 1. Mengurus muat naik (PUT), muat turun (GET), dan pemadaman (DELETE) fail
-#    media PS2 melalui Cloudflare Worker (ps2n-b2-proxy) tanpa had egress.
-# 2. Memilih baldi B2 secara automatik melalui formula agihan sekata X02.
-# 3. Merekod aktiviti transaksi harian & inventori aset ke SQLite3 Ledger.
+# FUNGSI UTAMA (SERASI UNTUK SEMUA MODUL & PROJEK MASA HADAPAN):
+# 1. Mengurus muat naik (PUT), muat turun (GET), semakan kewujudan (HEAD),
+#    dan pemadaman (DELETE) fail media/JSON PS2 melalui Cloudflare Worker
+#    (ps2n-b2-proxy) tanpa had egress.
+# 2. Fleksibel: Menerima laluan fail dalam bentuk `Path` mahupun `str`, serta
+#    alias parameter (`local_file`, `local_path`, `file_path`) supaya serasi
+#    dengan X11, X13, Instagram cross-poster, dan modul masa hadapan.
+# 3. Menyokong muat naik terus daripada memori (`upload_bytes` & `upload_json`)
+#    tanpa perlu mencipta fail sementara terlebih dahulu.
+# 4. Memilih baldi B2 secara automatik melalui formula agihan sekata X02 dan
+#    merekod aktiviti harian serta inventori aset ke SQLite3 Ledger.
 # ==============================================================================
 
 import hashlib
+import json
 import mimetypes
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import quote
 
 import requests
@@ -37,16 +44,18 @@ from X02_sqlite_ledger import format_bytes, ledger_db
 CF_WORKER_MAX_UPLOAD_BYTES = 95 * 1024 * 1024  # 95.0 MB
 
 
-def compute_file_sha256(file_path: Path) -> str:
+def compute_file_sha256(file_path: Union[str, Path]) -> str:
+    p = Path(file_path)
     h = hashlib.sha256()
-    with open(file_path, "rb") as f:
+    with open(p, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
 
 
-def detect_mime_type(file_path: Path) -> str:
-    ext = file_path.suffix.lower()
+def detect_mime_type(file_path: Union[str, Path]) -> str:
+    p = Path(file_path)
+    ext = p.suffix.lower()
     explicit_map = {
         ".mp4": "video/mp4",
         ".mkv": "video/x-matroska",
@@ -60,7 +69,7 @@ def detect_mime_type(file_path: Path) -> str:
     }
     if ext in explicit_map:
         return explicit_map[ext]
-    guessed, _ = mimetypes.guess_type(str(file_path))
+    guessed, _ = mimetypes.guess_type(str(p))
     return guessed or "application/octet-stream"
 
 
@@ -70,11 +79,17 @@ def encode_remote_path(remote_path: str) -> str:
 
 
 class B2ProxyStorageClient:
+    """
+    Klien Berpusat Backblaze B2 melalui Cloudflare Worker Proxy.
+    Menyokong muat naik fail (`Path` / `str`), bait mentah, dan objek JSON
+    merentasi kesemua baldi B2 secara seimbang.
+    """
+
     def __init__(
         self,
         proxy_base: str = cfg.CF_WORKER_B2_PROXY_STORAGE,
         proxy_secret: str = cfg.PS2N_PROXY_SECRET,
-    ):
+    ) -> None:
         self.proxy_base = proxy_base.rstrip("/")
         self.proxy_secret = proxy_secret.strip()
 
@@ -105,27 +120,41 @@ class B2ProxyStorageClient:
         except Exception as exc:
             return False, {"latency_ms": (time.perf_counter() - t0) * 1000, "error": str(exc)}
 
-    def upload_file(
+    def file_exists(self, bucket_name: str, remote_path: str) -> bool:
+        """
+        Menyemak sama ada fail wujud di B2 / Cloudflare Edge Cache (HEAD/GET ringan),
+        berguna sebelum menghantar `proxy_url` kepada Instagram Graph API.
+        """
+        target_url = self.build_public_url(bucket_name, remote_path)
+        try:
+            resp = requests.head(target_url, timeout=12, allow_redirects=True)
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 405:
+                r_get = requests.get(target_url, stream=True, timeout=12)
+                ok = r_get.status_code == 200
+                r_get.close()
+                return ok
+        except Exception:
+            pass
+        return False
+
+    def _put_stream_to_worker(
         self,
-        local_file: Path,
+        data_source: Any,
+        file_size: int,
+        content_type: str,
+        file_sha256: str,
         remote_path: str,
         target_account: Optional[Dict[str, Any]] = None,
         asset_meta: Optional[Dict[str, Any]] = None,
         register_in_ledger: bool = True,
     ) -> Tuple[bool, Dict[str, Any], str]:
-        """
-        Memuat naik fail tempatan ke B2 melalui Cloudflare Worker Proxy (PUT).
-        Jika target_account tidak dibekalkan, akaun dipilih secara automatik
-        mengikut formula agihan sekata daripada X02_sqlite_ledger.
-        """
+        """Enjin dalaman penghantaran PUT ke Cloudflare Worker Proxy."""
         if not self.proxy_secret:
             return False, {}, "PS2N_PROXY_SECRET tiada dalam konfigurasi."
 
-        if not local_file.exists() or not local_file.is_file():
-            return False, {}, f"Fail tempatan tidak ditemui: {local_file}"
-
-        file_size = local_file.stat().st_size
-        if file_size == 0:
+        if file_size <= 0:
             return False, {}, "Fail kosong (0 bait) tidak dibenarkan."
         if file_size > CF_WORKER_MAX_UPLOAD_BYTES:
             return (
@@ -142,8 +171,6 @@ class B2ProxyStorageClient:
         acc_index = int(chosen_acc["index"])
         clean_remote = remote_path.strip().lstrip("/")
         upload_url = self.build_public_url(bucket_name, clean_remote)
-        content_type = detect_mime_type(local_file)
-        file_sha256 = compute_file_sha256(local_file)
 
         headers = {
             "X-PS2N-Proxy-Key": self.proxy_secret,
@@ -153,10 +180,9 @@ class B2ProxyStorageClient:
 
         t0 = time.perf_counter()
         try:
-            with open(local_file, "rb") as f_stream:
-                resp = requests.put(upload_url, headers=headers, data=f_stream, timeout=120)
-
+            resp = requests.put(upload_url, headers=headers, data=data_source, timeout=120)
             latency_ms = (time.perf_counter() - t0) * 1000
+
             if resp.status_code != 200:
                 return (
                     False,
@@ -187,7 +213,7 @@ class B2ProxyStorageClient:
                 "sha256": file_sha256,
                 "content_type": content_type,
                 "proxy_url": public_url,
-                "latency_ms": latency_ms,
+                "latency_ms": round(latency_ms, 1),
             }
 
             if register_in_ledger and asset_meta:
@@ -211,19 +237,101 @@ class B2ProxyStorageClient:
                 )
 
             return True, result_info, "Muat naik B2 melalui Cloudflare Proxy berjaya."
-
         except Exception as exc:
             return False, {}, f"Ralat sambungan semasa muat naik B2 Proxy: {exc}"
+
+    def upload_file(
+        self,
+        local_file: Optional[Union[str, Path]] = None,
+        remote_path: str = "",
+        target_account: Optional[Dict[str, Any]] = None,
+        asset_meta: Optional[Dict[str, Any]] = None,
+        register_in_ledger: bool = True,
+        *,
+        local_path: Optional[Union[str, Path]] = None,
+        file_path: Optional[Union[str, Path]] = None,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        Memuat naik fail tempatan ke B2 melalui Cloudflare Worker Proxy (PUT).
+        Menerima kedua-dua jenis `Path` dan `str`, serta alias `local_file`,
+        `local_path`, atau `file_path` untuk keserasian penuh semua modul.
+        """
+        raw_src = local_file if local_file is not None else (local_path if local_path is not None else file_path)
+        if raw_src is None:
+            return False, {}, "Tiada laluan fail tempatan dibekalkan."
+
+        src_path = Path(raw_src)
+        if not src_path.exists() or not src_path.is_file():
+            return False, {}, f"Fail tempatan tidak ditemui: {src_path}"
+
+        dest_remote = remote_path.strip() or f"uploads/{src_path.name}"
+        file_size = src_path.stat().st_size
+        content_type = detect_mime_type(src_path)
+        file_sha256 = compute_file_sha256(src_path)
+
+        with open(src_path, "rb") as f_stream:
+            return self._put_stream_to_worker(
+                data_source=f_stream,
+                file_size=file_size,
+                content_type=content_type,
+                file_sha256=file_sha256,
+                remote_path=dest_remote,
+                target_account=target_account,
+                asset_meta=asset_meta,
+                register_in_ledger=register_in_ledger,
+            )
+
+    def upload_bytes(
+        self,
+        data: bytes,
+        remote_path: str,
+        content_type: str = "application/octet-stream",
+        target_account: Optional[Dict[str, Any]] = None,
+        asset_meta: Optional[Dict[str, Any]] = None,
+        register_in_ledger: bool = True,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """Memuat naik bait mentah terus dari memori ke B2 tanpa mencipta fail sementara."""
+        if not isinstance(data, (bytes, bytearray)):
+            return False, {}, "Data mestilah dalam format bytes."
+        raw_bytes = bytes(data)
+        sha256_hex = hashlib.sha256(raw_bytes).hexdigest()
+        return self._put_stream_to_worker(
+            data_source=raw_bytes,
+            file_size=len(raw_bytes),
+            content_type=content_type,
+            file_sha256=sha256_hex,
+            remote_path=remote_path,
+            target_account=target_account,
+            asset_meta=asset_meta,
+            register_in_ledger=register_in_ledger,
+        )
+
+    def upload_json(
+        self,
+        payload: Any,
+        remote_path: str,
+        target_account: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """Menukar objek Python (dict/list) kepada JSON UTF-8 dan memuat naik terus ke B2."""
+        raw_bytes = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        return self.upload_bytes(
+            data=raw_bytes,
+            remote_path=remote_path,
+            content_type="application/json",
+            target_account=target_account,
+            register_in_ledger=False,
+        )
 
     def download_file(
         self,
         bucket_name: str,
         remote_path: str,
-        local_dest: Path,
+        local_dest: Union[str, Path],
     ) -> Tuple[bool, int, str]:
         """Memuat turun fail dari B2 melalui Edge Cache Cloudflare Worker (GET)."""
+        dest_path = Path(local_dest)
         download_url = self.build_public_url(bucket_name, remote_path)
-        local_dest.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             with requests.get(download_url, stream=True, timeout=90) as resp:
@@ -231,7 +339,7 @@ class B2ProxyStorageClient:
                     return False, 0, f"Gagal muat turun (HTTP {resp.status_code})"
 
                 total_written = 0
-                with open(local_dest, "wb") as out_f:
+                with open(dest_path, "wb") as out_f:
                     for chunk in resp.iter_content(chunk_size=1024 * 256):
                         if chunk:
                             out_f.write(chunk)
@@ -272,7 +380,7 @@ class B2ProxyStorageClient:
             return False, f"Ralat semasa memadam fail B2 Proxy: {exc}"
 
 
-# Singleton Instance untuk diimport oleh modul X06..X09
+# Singleton Instance utama untuk diimport oleh semua modul projek
 b2_proxy = B2ProxyStorageClient()
 
 
@@ -282,7 +390,7 @@ b2_proxy = B2ProxyStorageClient()
 if __name__ == "__main__":
     console.print(
         Panel.fit(
-            "[bold cyan]PS2-RETRO-NOSTALGIA :: B2 PROXY STORAGE CLIENT TEST (X03)[/bold cyan]\n"
+            "[bold cyan]PS2-RETRO-NOSTALGIA :: B2 PROXY STORAGE CLIENT SMART TEST (X03)[/bold cyan]\n"
             f"[dim]Endpoint: {b2_proxy.proxy_base}[/dim]",
             border_style="cyan",
         )
@@ -293,30 +401,35 @@ if __name__ == "__main__":
         console.print(f"[bold red]❌ Worker tidak sedia: {health_info}[/bold red]")
         sys.exit(1)
 
-    # Cipta fail ujian sementara di temp/
     probe_local = cfg.TEMP_DIR / f"x03_probe_{int(time.time())}.txt"
     probe_downloaded = cfg.TEMP_DIR / f"x03_probe_dl_{int(time.time())}.txt"
-    probe_text = f"PS2N X03 BALANCED UPLOAD & EDGE STREAM TEST @ {int(time.time())}"
+    probe_text = f"PS2N X03 SMART UPLOAD (STR & PATH) & EDGE STREAM TEST @ {int(time.time())}"
     probe_local.write_text(probe_text, encoding="utf-8")
 
     remote_probe_path = f"_self_test/{probe_local.name}"
 
     try:
+        # Uji menggunakan laluan str(probe_local) untuk mengesahkan keserasian X11/X13
         up_ok, up_info, up_msg = b2_proxy.upload_file(
-            local_file=probe_local,
-            remote_path=remote_probe_path,
+            str(probe_local),
+            remote_probe_path,
             register_in_ledger=False,
         )
 
+        exists_ok = False
         dl_ok, dl_bytes, dl_msg = (False, 0, "Dilangkau")
         content_match = False
         del_ok, del_msg = (False, "Dilangkau")
 
         if up_ok:
+            exists_ok = b2_proxy.file_exists(
+                bucket_name=up_info["bucket_name"],
+                remote_path=remote_probe_path,
+            )
             dl_ok, dl_bytes, dl_msg = b2_proxy.download_file(
                 bucket_name=up_info["bucket_name"],
                 remote_path=remote_probe_path,
-                local_dest=probe_downloaded,
+                local_dest=str(probe_downloaded),
             )
             if dl_ok and probe_downloaded.exists():
                 content_match = probe_downloaded.read_text(encoding="utf-8") == probe_text
@@ -328,7 +441,7 @@ if __name__ == "__main__":
             )
 
         tbl = Table(box=box.ROUNDED, header_style="bold green")
-        tbl.add_column("Langkah Ujian X03", style="bold white")
+        tbl.add_column("Langkah Ujian Pintar X03", style="bold white")
         tbl.add_column("Butiran", style="cyan")
         tbl.add_column("Status", justify="center")
 
@@ -338,15 +451,15 @@ if __name__ == "__main__":
             "[bold green]OK[/bold green]",
         )
         tbl.add_row(
-            "2. Balanced PUT Upload",
+            "2. Balanced PUT (str & Path)",
             f"Baldi #{up_info.get('bucket_index', '-')} ({up_info.get('bucket_name', '-')}) | {up_info.get('latency_ms', 0):.0f} ms"
             if up_ok
             else up_msg,
             "[bold green]OK[/bold green]" if up_ok else "[bold red]GAGAL[/bold red]",
         )
         tbl.add_row(
-            "3. Edge GET Download",
-            f"{dl_bytes} B diterima | Integriti Teks: {'Sepadan' if content_match else 'Tidak Sepadan'}"
+            "3. Edge HEAD & GET Download",
+            f"Wujud: {exists_ok} | {dl_bytes} B | Integriti: {'Sepadan' if content_match else 'Tidak Sepadan'}"
             if dl_ok
             else dl_msg,
             "[bold green]OK[/bold green]" if (dl_ok and content_match) else "[bold red]GAGAL[/bold red]",

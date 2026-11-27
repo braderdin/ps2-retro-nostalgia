@@ -1,0 +1,138 @@
+name: X13 - Reddit PS2 + Vision OCR FB Auto-Poster (10.15 AM & 10.15 PM MYT)
+
+on:
+  schedule:
+    # 02:15 UTC = 10:15 AM MYT (Waktu Malaysia UTC+8)
+    - cron: "15 2 * * *"
+    # 14:15 UTC = 10:15 PM MYT (Waktu Malaysia UTC+8)
+    - cron: "15 14 * * *"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run sahaja tanpa post ke Facebook?"
+        required: true
+        default: false
+        type: boolean
+      force_unsplash:
+        description: "Paksa guna sandaran gambar Unsplash?"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  publish-reddit-ps2-vision-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 1. Nyahsekat DNS Runner (Guna Cloudflare 1.1.1.1 & Google 8.8.8.8)
+        run: |
+          sudo sed -i '1inameserver 1.1.1.1\nnameserver 8.8.8.8' /etc/resolv.conf
+          head -n 4 /etc/resolv.conf
+
+      - name: 2. Peruntukan Ruang SSD Runner (Kosongkan ~15GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          df -h
+
+      - name: 3. Bina 10GB Swap Memory di Runner
+        run: |
+          free -h
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo sysctl vm.swappiness=60
+          free -h
+
+      - name: 4. Checkout Repositori & Pangkalan Data SQLite (.db)
+        uses: actions/checkout@v4
+
+      - name: 5. Sediakan Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 6. Pulihkan / Simpan Cache Hugging Face GGUF & VLM
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-hf-qwen35-4b-q4km-v1
+          restore-keys: |
+            ${{ runner.os }}-hf-qwen35-4b-q4km-
+
+      - name: 7. Pulihkan / Simpan Cache Pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-qwen35-prod-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-qwen35-prod-
+
+      - name: 8. Pasang Kebergantungan Python & llama-cpp-python (CPU Wheel)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "llama-cpp-python>=0.3.8" "huggingface-hub>=0.28.0"
+
+      - name: 9. Terbit Hantaran Reddit PS2 + Vision OCR & Komen Shopee (X13)
+        id: fb_reddit_post
+        env:
+          B2_ACCOUNTS_JSON: ${{ secrets.B2_ACCOUNTS_JSON }}
+          REDIS_ACCOUNTS_JSON: ${{ secrets.REDIS_ACCOUNTS_JSON }}
+          VECTOR_ACCOUNTS_JSON: ${{ secrets.VECTOR_ACCOUNTS_JSON }}
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_APP_ID: ${{ secrets.PS2N_FB_APP_ID }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_FB_PAGE_ID: ${{ secrets.PS2N_FB_PAGE_ID }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_GRAPH_VERSION: ${{ secrets.PS2N_FB_GRAPH_VERSION }}
+          CF_WORKER_B2_PROXY_STORAGE: ${{ secrets.CF_WORKER_B2_PROXY_STORAGE }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+          PS2N_UNSPLASH_ACCESS_KEY: ${{ secrets.PS2N_UNSPLASH_ACCESS_KEY }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          if [ "${{ inputs.force_unsplash }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --force-unsplash"
+          fi
+          python3 live-engine-01/X13_reddit_ps2_story_poster.py $EXTRA_ARGS
+
+      - name: 10. Hantar Laporan Siaran atau Amaran Ralat ke Telegram Channel (X12)
+        if: always()
+        env:
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+        run: |
+          if [ "${{ steps.fb_reddit_post.outcome }}" = "success" ]; then
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status success \
+              --report-json temp/x13_last_reddit_post.json \
+              --platform "Facebook Page (Reddit PS2 + Vision OCR)" \
+              --channel default
+          else
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status failure \
+              --report-json temp/x13_last_reddit_post.json \
+              --platform "Facebook Page (Reddit PS2 + Vision OCR)" \
+              --channel default \
+              --also-dm \
+              --error-step "fb_reddit_post (outcome=${{ steps.fb_reddit_post.outcome }}, job=${{ job.status }})"
+          fi
+
+      - name: 11. Muat Naik Laporan JSON Hantaran X13
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x13-fb-reddit-post-report
+          path: temp/x13_last_reddit_post.json
+          retention-days: 7
+          if-no-files-found: ignore
