@@ -1,82 +1,178 @@
 {
-  "updated_at_myt": "2026-11-28T21:42:03.997482+08:00",
-  "total_frames_analyzed": 4,
+  "updated_at_myt": "2026-11-29T00:55:31.843123+08:00",
+  "total_frames_analyzed": 9,
   "frames": [
     {
+      "batch_no": 1,
+      "clip_order": 1,
+      "clip_id": "30301757",
+      "frame_no": 1,
+      "timestamp_sec": 2.69,
+      "compressed_kb": 5.31,
+      "detected_objects": [
+        "controller",
+        "hands"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller hitam di latar merah.",
+      "recorded_at_iso": "2026-11-29T00:40:28.774916+08:00"
+    },
+    {
+      "batch_no": 1,
+      "clip_order": 1,
+      "clip_id": "30301757",
+      "frame_no": 2,
+      "timestamp_sec": 7.47,
+      "compressed_kb": 5.36,
+      "detected_objects": [
+        "controller",
+        "hands"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller hitam di latar merah.",
+      "recorded_at_iso": "2026-11-29T00:40:28.911147+08:00"
+    },
+    {
+      "batch_no": 1,
+      "clip_order": 1,
+      "clip_id": "30301757",
+      "frame_no": 3,
+      "timestamp_sec": 12.26,
+      "compressed_kb": 5.32,
+      "detected_objects": [
+        "controller",
+        "hands"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller hitam di latar merah.",
+      "recorded_at_iso": "2026-11-29T00:40:29.045093+08:00"
+    },
+    {
       "batch_no": 2,
       "clip_order": 2,
-      "clip_id": "9834659",
+      "clip_id": "30301758",
+      "frame_no": 4,
+      "timestamp_sec": 2.68,
+      "compressed_kb": 7.32,
+      "detected_objects": [
+        "controller",
+        "hands"
+      ],
+      "ocr_text": "None",
+      "console_platform": "PS2",
+      "is_ps2_relevant": true,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller putih di atas latar biru.",
+      "recorded_at_iso": "2026-11-29T00:41:43.436134+08:00"
+    },
+    {
+      "batch_no": 2,
+      "clip_order": 2,
+      "clip_id": "30301758",
       "frame_no": 5,
-      "timestamp_sec": 16.14,
-      "compressed_kb": 22.22,
+      "timestamp_sec": 7.44,
+      "compressed_kb": 7.26,
       "detected_objects": [
-        "arcade_cabinet",
-        "gamer",
-        "controller"
+        "controller",
+        "hands"
       ],
-      "ocr_text": "TRANSFORMERS",
-      "console_platform": "CRT/Retro Setup",
-      "is_ps2_relevant": false,
-      "has_human_face": true,
-      "visual_category": "cat_multiplayer",
-      "scene_description": "Nostalgia for classic arcade gaming with friends.",
-      "recorded_at_iso": "2026-11-28T21:42:03.442217+08:00"
+      "ocr_text": "None",
+      "console_platform": "PS2",
+      "is_ps2_relevant": true,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller putih di atas latar biru.",
+      "recorded_at_iso": "2026-11-29T00:41:43.562647+08:00"
     },
     {
       "batch_no": 2,
       "clip_order": 2,
-      "clip_id": "9834659",
+      "clip_id": "30301758",
       "frame_no": 6,
-      "timestamp_sec": 26.47,
-      "compressed_kb": 23.42,
+      "timestamp_sec": 12.2,
+      "compressed_kb": 7.29,
       "detected_objects": [
-        "arcade_cabinet",
-        "gamer"
+        "controller",
+        "hands"
       ],
       "ocr_text": "None",
-      "console_platform": "CRT/Retro Setup",
-      "is_ps2_relevant": false,
-      "has_human_face": true,
-      "visual_category": "cat_multiplayer",
-      "scene_description": "Mengambil kembali semangat bermain game arcade lama bersama rakan.",
-      "recorded_at_iso": "2026-11-28T21:42:03.563697+08:00"
+      "console_platform": "PS2",
+      "is_ps2_relevant": true,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Tangan memegang controller putih di atas latar biru.",
+      "recorded_at_iso": "2026-11-29T00:41:43.703492+08:00"
     },
     {
-      "batch_no": 2,
-      "clip_order": 3,
-      "clip_id": "4836902",
-      "frame_no": 7,
-      "timestamp_sec": 4.76,
-      "compressed_kb": 26.25,
+      "batch_no": 7,
+      "clip_order": 7,
+      "clip_id": "3946032",
+      "frame_no": 19,
+      "timestamp_sec": 2.65,
+      "compressed_kb": 7.58,
       "detected_objects": [
-        "arcade_cabinet",
-        "stairs"
+        "PS2 console",
+        "DualShock controller",
+        "VR headset"
       ],
       "ocr_text": "None",
-      "console_platform": "CRT/Retro Setup",
-      "is_ps2_relevant": false,
+      "console_platform": "PlayStation",
+      "is_ps2_relevant": true,
       "has_human_face": false,
-      "visual_category": "cat_storage_tech",
-      "scene_description": "Suasana arcade retro yang penuh warna di ruang bawah tanah.",
-      "recorded_at_iso": "2026-11-28T21:42:03.730293+08:00"
+      "visual_category": "cat_controller",
+      "scene_description": "Kekuatan nostalgia PS2 masih hidup dengan teknologi VR masa kini.",
+      "recorded_at_iso": "2026-11-29T00:55:31.325962+08:00"
     },
     {
-      "batch_no": 2,
-      "clip_order": 3,
-      "clip_id": "4836902",
-      "frame_no": 8,
-      "timestamp_sec": 13.22,
-      "compressed_kb": 26.4,
+      "batch_no": 7,
+      "clip_order": 7,
+      "clip_id": "3946032",
+      "frame_no": 20,
+      "timestamp_sec": 7.37,
+      "compressed_kb": 9.98,
       "detected_objects": [
-        "arcade_cabinet"
+        "PS2 console",
+        "DualShock controller"
       ],
       "ocr_text": "None",
-      "console_platform": "CRT/Retro Setup",
-      "is_ps2_relevant": false,
+      "console_platform": "PlayStation",
+      "is_ps2_relevant": true,
       "has_human_face": false,
-      "visual_category": "cat_storage_tech",
-      "scene_description": "Pemandangan arcade klasik yang menarik di kedai permainan.",
-      "recorded_at_iso": "2026-11-28T21:42:03.865079+08:00"
+      "visual_category": "cat_controller",
+      "scene_description": "Kontrol permainan klasik yang dikenang bersama kenangan masa lalu.",
+      "recorded_at_iso": "2026-11-29T00:55:31.485686+08:00"
+    },
+    {
+      "batch_no": 7,
+      "clip_order": 7,
+      "clip_id": "3946032",
+      "frame_no": 21,
+      "timestamp_sec": 12.09,
+      "compressed_kb": 7.6,
+      "detected_objects": [
+        "PS2 console",
+        "DualShock controller"
+      ],
+      "ocr_text": "None",
+      "console_platform": "PlayStation",
+      "is_ps2_relevant": true,
+      "has_human_face": false,
+      "visual_category": "cat_controller",
+      "scene_description": "Permainan lama yang membawa kita kembali ke masa kecil bermain.",
+      "recorded_at_iso": "2026-11-29T00:55:31.617583+08:00"
     }
   ]
 }

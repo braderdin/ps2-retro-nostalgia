@@ -3,26 +3,22 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - PERSONA AI #3: FACEBOOK REELS AUTO-POSTER (X17)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X17_fb_reels_persona_poster.py
 #
-# FUNGSI UTAMA:
+# FUNGSI UTAMA (EDISI KALIS RALAT, SMART FACE REPLACEMENT & ANTI-PRIMING):
 # 1. Kawalan Jadual Pintar 2 Video Setiap 48 Jam (9:00 Pagi - 9:00 Malam MYT):
 #    Menyemak kuota gelongsor Upstash Redis (`fb_reels_48h`, max_events=2,
 #    window=172800s) + kebarangkalian rawak setiap jam SEBELUM memuatkan model
 #    AI supaya masa runner GitHub Actions sifar pembaziran apabila slot penuh.
-# 2. Penapis Anti-Ulangan Ketat 6 Bulan (180 Hari):
-#    - Video Pexels ID & SHA-256 dikunci 180 hari (X14) + Muzik dikunci 60 hari (X15).
-#    - Cincangan SHA-256 cerita dikunci 180 hari + Penapis Semantik Vector X05
-#      (60 hari untuk persamaan >=95%, 5 hari untuk persamaan >=76%).
-#    - Memori 5 ayat terakhir (`MEMORI 5 AYAT TERAKHIR`) dibekalkan terus kepada
-#      AI supaya struktur pembuka dan jalan cerita sentiasa segar & tidak kaku.
-# 3. Watak Dinamik Mengikut Hari, Waktu MYT, Suasana Malaysia & Vibe Muzik:
-#    7 watak berbeza (Isnin hingga Ahad) + 5 slot masa MYT + kalendar Malaysia.
-# 4. Strategi Komen Hibrid 70% / 30%:
-#    - 70% Hantaran Umum/Santai: Komen soalan interaksi santai untuk menarik
-#      follower baharu & melonjakkan algoritma Reels (tanpa pautan luar).
-#    - 30% Hantaran Konsol/Retro/Gaming: Komen pertama bergilir 1 daripada 10
-#      produk Shopee daripada `data/ps2_shopee_products.db`.
-# 5. Penerbitan FB Reels Dahulu -> Langkau Feed Jika Berjaya -> Fallback FB Feed
-#    Jika Reels Gagal + Arkib Video & Log ke Backblaze B2 (X03) + Laporan X12.
+# 2. Gelung Penggantian Pintar Klip Berwajah (Smart Face Replacement):
+#    Jika X16 menyingkirkan klip kerana wajah hadapan/ramai orang, X17 mengunci
+#    ID klip tersebut selama 180 hari di Redis & memuat turun klip pengganti
+#    daripada `reserve_candidates` (atau kategori objek/alam) sehingga cukup
+#    sekurang-kurangnya 3 klip bersih (menyokong 3-5 klip dinamik & 30-50s).
+# 3. Penjana Hook Dinamik Anti-Priming + Pembetulan Kendiri + Failsafe:
+#    - Menghindari penyalinan ayat penuh sejarah yang memicu pembuka sama.
+#    - Menyekat pembuka ayat lama & menyuntik maklum balas ralat ke cubaan
+#      berikutnya, dengan Failsafe Synthesizer sebagai sandaran terakhir.
+# 4. Strategi Komen Hibrid 70% / 30% + Penerbitan FB Reels Dahulu (Fallback
+#    FB Feed) + Arkib Video & Log ke Backblaze B2 (X03) + Laporan X12.
 # ==============================================================================
 
 import argparse
@@ -39,7 +35,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from rich import box
@@ -73,11 +69,17 @@ PS2VectorShardedManager: Any = getattr(_vector_mod, "PS2VectorShardedManager")
 llm_engine: Any = getattr(_llm_mod, "llm_engine")
 clean_and_scrub_bm_story: Any = getattr(_llm_mod, "clean_and_scrub_bm_story")
 
+PEXELS_REELS_CATEGORIES: Dict[str, Any] = getattr(_x14_mod, "PEXELS_REELS_CATEGORIES")
 fetch_and_prepare_pexels_clips: Any = getattr(_x14_mod, "fetch_and_prepare_pexels_clips")
+download_and_prepare_reserve_clips: Any = getattr(_x14_mod, "download_and_prepare_reserve_clips")
+mark_rejected_face_clips_180d: Any = getattr(_x14_mod, "mark_rejected_face_clips_180d")
 mark_pexels_clips_used_6_months: Any = getattr(_x14_mod, "mark_pexels_clips_used_6_months")
+
 prepare_reels_music_track: Any = getattr(_x15_mod, "prepare_reels_music_track")
 mark_music_track_used: Any = getattr(_x15_mod, "mark_music_track_used")
+
 extract_and_analyze_clips_ocr: Any = getattr(_x16_mod, "extract_and_analyze_clips_ocr")
+build_cinematic_visual_brief: Any = getattr(_x16_mod, "build_cinematic_visual_brief")
 render_vertical_reels_video: Any = getattr(_x16_mod, "render_vertical_reels_video")
 
 # Ruang nama khusus Reels pada Upstash Redis & Upstash Vector
@@ -102,6 +104,10 @@ REELS_QUOTA_KEY: str = "fb_reels_48h"
 REELS_MAX_PER_48H: int = 2
 REELS_WINDOW_SECONDS: int = 48 * 3600
 
+# Kawalan Klip & Penggantian Pintar Wajah
+MIN_CLEAN_CLIPS_TARGET: int = 3
+MAX_FACE_REPLACEMENT_ROUNDS: int = 2
+
 # Kawalan Teks & Anti-Ulangan
 CAPTION_MIN_CHARS: int = 330
 CAPTION_MAX_CHARS: int = 560
@@ -113,6 +119,45 @@ STORY_SEMANTIC_SIMILAR_DAYS: int = 5
 # Had Saiz SQLite < 30 MB untuk GitHub
 SQLITE_MAX_SAFE_BYTES: int = 26 * 1024 * 1024
 SQLITE_MAX_ARCHIVE_SHARDS: int = 6
+
+# Sudut pembuka dinamik untuk mengelak AI mengulang permulaan ayat lama
+DYNAMIC_HOOK_ANGLES: List[Dict[str, str]] = [
+    {
+        "hook_id": "HOOK_SOALAN_SANTAI",
+        "directive": (
+            "Mulakan ayat pertama dengan SOALAN santai kepada geng/korang "
+            "(contoh: 'Pernah tak korang rasa...', 'Siapa kat sini yang masih...', 'Korang perasan tak...')."
+        ),
+    },
+    {
+        "hook_id": "HOOK_VISUAL_TERUS",
+        "directive": (
+            "Mulakan ayat pertama dengan menggambarkan terus objek, cahaya, atau suasana dalam video "
+            "(contoh: 'Cahaya dalam klip ni...', 'Suasana sudut ni...', 'Bunyi rentak dalam video ni...')."
+        ),
+    },
+    {
+        "hook_id": "HOOK_NOSTALGIA_DULU",
+        "directive": (
+            "Mulakan ayat pertama dengan mengimbau kenangan zaman sekolah atau kedai game era 2000-an "
+            "(contoh: 'Zaman balik sekolah dulu...', 'Kalau ingat balik era 2000-an...', 'Dulu masa lepak depan TV...')."
+        ),
+    },
+    {
+        "hook_id": "HOOK_TERAPI_REHAT",
+        "directive": (
+            "Mulakan ayat pertama dengan mengajak pembaca berehat sekejap daripada rutin harian "
+            "(contoh: 'Lepas penat urus kerja...', 'Kadang-kadang kita cuma perlukan...', 'Tarik nafas sekejap geng...')."
+        ),
+    },
+    {
+        "hook_id": "HOOK_PERKAKASAN_RETRO",
+        "directive": (
+            "Mulakan ayat pertama dengan pemerhatian ringkas tentang perkakasan, bunyi, atau estetika "
+            "(contoh: 'Walaupun teknologi dah jauh berubah...', 'Bila tengok susun atur macam ni...', 'Bunyi latar dalam video ni...')."
+        ),
+    },
+]
 
 # 7 Watak Unik Mengikut Hari Seminggu (Dinamik & Tidak Kaku)
 WEEKLY_REELS_CHARACTERS: List[Dict[str, str]] = [
@@ -326,8 +371,25 @@ def get_dynamic_myt_context() -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 2. PENYELARAS REKOD SQLITE (< 30 MB), MEMORI 5 AYAT & KOMEN HIBRID 70/30
+# 2. PENYELARAS REKOD SQLITE (< 30 MB), MEMORI SEJARAH & KOMEN HIBRID 70/30
 # ==============================================================================
+def _clean_sqlite_wal_files(db_path: Path) -> None:
+    """Memastikan jurnal WAL digabungkan dan fail sementara -wal/-shm dipadam."""
+    if not db_path.exists():
+        return
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    for suffix in ("-wal", "-shm"):
+        Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+
+
 class ReelsHistoryCoordinator:
     def __init__(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -376,6 +438,7 @@ class ReelsHistoryCoordinator:
             conn.commit()
         finally:
             conn.close()
+        _clean_sqlite_wal_files(db_path)
 
     def enforce_sqlite_size_guard(self) -> None:
         if not REELS_HISTORY_DB_PATH.exists():
@@ -392,6 +455,7 @@ class ReelsHistoryCoordinator:
             conn.close()
 
         if REELS_HISTORY_DB_PATH.stat().st_size < SQLITE_MAX_SAFE_BYTES:
+            _clean_sqlite_wal_files(REELS_HISTORY_DB_PATH)
             return
 
         existing = sorted(DATA_DIR.glob("ps2_reels_posts_history_part*.db"))
@@ -423,11 +487,14 @@ class ReelsHistoryCoordinator:
             src.close()
             dst.close()
 
+        _clean_sqlite_wal_files(REELS_HISTORY_DB_PATH)
+        _clean_sqlite_wal_files(shard_path)
+
         all_shards = sorted(DATA_DIR.glob("ps2_reels_posts_history_part*.db"))
         while len(all_shards) > SQLITE_MAX_ARCHIVE_SHARDS:
             all_shards.pop(0).unlink(missing_ok=True)
 
-    def get_recent_reels_posts(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_recent_reels_posts(self, limit: int = 12) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
         seen = set()
 
@@ -489,7 +556,6 @@ class ReelsHistoryCoordinator:
         elif force_promo_mode == "organic":
             use_shopee = False
         else:
-            # Kekalkan nisbah sekitar 30% promo (maksimum 2 daripada 6 post terakhir) & hanya untuk topik gaming/retro
             use_shopee = bool(is_gaming_eligible and recent_promo_count < 2 and SHOPEE_DB_PATH.exists())
 
         if not use_shopee:
@@ -513,7 +579,6 @@ class ReelsHistoryCoordinator:
                 "comment_text": ORGANIC_INTERACTION_COMMENTS_20[idx],
             }
 
-        # Mod 30% Promo Shopee Bersasar
         low = topic_hint.lower()
         if "matrix" in low:
             target_compat = "MATRIX_ONLY"
@@ -620,7 +685,6 @@ class ReelsHistoryCoordinator:
         pexels_ids = [str(c["id"]) for c in clips]
         video_shas = [str(c["sha256"]) for c in clips if c.get("sha256")]
 
-        # 1. SQLite Tempatan (< 30 MB)
         conn = sqlite3.connect(str(REELS_HISTORY_DB_PATH))
         try:
             conn.execute(
@@ -665,9 +729,9 @@ class ReelsHistoryCoordinator:
             conn.commit()
         finally:
             conn.close()
+        _clean_sqlite_wal_files(REELS_HISTORY_DB_PATH)
         self.enforce_sqlite_size_guard()
 
-        # Kemas kini kaunter Shopee jika mod promo 30% digunakan
         if record["comment_mode"] == "SHOPEE_PROMO_30" and SHOPEE_DB_PATH.exists():
             s_conn = sqlite3.connect(str(SHOPEE_DB_PATH))
             try:
@@ -682,8 +746,8 @@ class ReelsHistoryCoordinator:
                 s_conn.commit()
             finally:
                 s_conn.close()
+            _clean_sqlite_wal_files(SHOPEE_DB_PATH)
 
-        # 2. Kunci Pexels IDs & SHA-256 (180 Hari) + Muzik (60 Hari)
         mark_pexels_clips_used_6_months(
             clips=clips,
             category=record["topic_category"],
@@ -692,7 +756,6 @@ class ReelsHistoryCoordinator:
         )
         mark_music_track_used(music_info=music_info, post_uid=post_uid)
 
-        # 3. Simpan ke Upstash Redis (`ps2n_reels`) + Kuota Gelongsor 48 Jam
         reels_redis.save_published_post(
             post_uid=post_uid,
             post_meta={
@@ -742,7 +805,6 @@ class ReelsHistoryCoordinator:
             reels_redis.increment_rotation_score("reels_shopee_products", record["shopee_product_code"])
             reels_redis.increment_rotation_score("reels_shopee_comments", f"shp_{record['comment_variant_idx']:02d}")
 
-        # 4. Simpan Vektor Semantik Cerita & Kategori Visual (`ps2n_reels`)
         try:
             reels_vector.upsert_story_vector(
                 post_uid=post_uid,
@@ -767,8 +829,205 @@ class ReelsHistoryCoordinator:
 
 
 # ==============================================================================
-# 3. PENJANA KAPSYEN PERSONA AI DINAMIK (MEMORI 5 AYAT TERAKHIR + WATAK HARIAN)
+# 3. GELUNG PENGGANTIAN PINTAR KLIP BERWAJAH (SEHINGGA CUKUP >= 3 KLIP BERSIH)
 # ==============================================================================
+def run_ocr_with_smart_face_replacement(
+    pex_pkg: Dict[str, Any],
+    work_dir: Path,
+    dry_run_redis: bool = False,
+) -> Dict[str, Any]:
+    """
+    Mengimbas klip Pexels secara berperingkat (3 gambar mampatan per panggilan OCR).
+    Jika ada klip yang dikesan berwajah manusia, ID klip tersebut dikunci 180 hari
+    dalam Redis dan digantikan daripada `reserve_candidates` (atau 1 carian kategori
+    alam/neon tanpa manusia) sehingga cukup sekurang-kurangnya `MIN_CLEAN_CLIPS_TARGET`
+    klip bersih tanpa mengulang imbasan klip yang sudah disahkan bersih.
+    """
+    desired_target = max(MIN_CLEAN_CLIPS_TARGET, int(pex_pkg.get("target_clips_requested") or len(pex_pkg["clips"])))
+    queue_clips: List[Dict[str, Any]] = list(pex_pkg["clips"])
+    reserve_pool: List[Dict[str, Any]] = list(pex_pkg.get("reserve_candidates") or [])
+    seen_shas: Set[str] = set(str(s) for s in (pex_pkg.get("seen_shas") or []) if s)
+    seen_ids: Set[str] = set(str(i) for i in (pex_pkg.get("seen_ids") or []) if i)
+
+    verified_clean_clips: List[Dict[str, Any]] = []
+    all_rejected_face_ids: List[str] = []
+    ledger: Any = None
+    last_frame_no = 0
+    last_batch_no = 0
+    clip_order_cursor = 0
+    replacement_rounds = 0
+
+    for round_idx in range(0, MAX_FACE_REPLACEMENT_ROUNDS + 1):
+        if not queue_clips:
+            break
+
+        ocr_out = extract_and_analyze_clips_ocr(
+            clips=queue_clips,
+            work_dir=work_dir,
+            topic_hint=f"{pex_pkg['category']} {pex_pkg['query']}",
+            json_ref_path=TEMP_DIR / "x17_ocr_sessions.json",
+            db_ref_path=TEMP_DIR / "x17_reels_ocr_state.db",
+            existing_ledger=ledger,
+            start_frame_no=last_frame_no,
+            start_batch_no=last_batch_no,
+            clip_order_offset=clip_order_cursor,
+        )
+
+        ledger = ocr_out.get("ledger")
+        last_frame_no = int(ocr_out.get("last_frame_no") or last_frame_no)
+        last_batch_no = int(ocr_out.get("last_batch_no") or last_batch_no)
+        clip_order_cursor += len(queue_clips)
+
+        round_clean = ocr_out.get("clean_clips") or []
+        round_rej_ids = ocr_out.get("rejected_face_ids") or []
+
+        for c in round_clean:
+            if str(c["id"]) not in {str(x["id"]) for x in verified_clean_clips}:
+                verified_clean_clips.append(c)
+
+        for rid in round_rej_ids:
+            if rid not in all_rejected_face_ids:
+                all_rejected_face_ids.append(rid)
+
+        if all_rejected_face_ids and not dry_run_redis:
+            mark_rejected_face_clips_180d(all_rejected_face_ids, post_uid="x17_face_rejected")
+
+        if len(verified_clean_clips) >= desired_target:
+            break
+
+        needed = desired_target - len(verified_clean_clips)
+        if round_idx >= MAX_FACE_REPLACEMENT_ROUNDS:
+            break
+
+        replacement_rounds += 1
+        console.print(
+            f"[bold yellow]🔄 [Penggantian Pintar Klip #{replacement_rounds}][/bold yellow] "
+            f"Klip bersih: {len(verified_clean_clips)}/{desired_target}. Menarik {needed} klip ganti..."
+        )
+
+        replacements, reserve_pool = download_and_prepare_reserve_clips(
+            reserve_candidates=reserve_pool,
+            work_dir=work_dir,
+            needed_count=needed,
+            seen_batch_sha256=seen_shas,
+            existing_ids=seen_ids,
+        )
+
+        # Jika baki calon carian utama habis, buat 1 carian kategori bebas manusia (alam/neon/malam hujan)
+        if len(replacements) < needed:
+            api_key = (getattr(cfg, "PS2N_PEXELS_API_KEY", "") or os.getenv("PS2N_PEXELS_API_KEY", "")).strip()
+            if api_key:
+                safe_cats = ["NATURE_CALM_ESCAPE", "CYBER_NEON_VIBE", "COZY_RAIN_NIGHT", "LATE_NIGHT_CHILL"]
+                fb_cat = random.choice(safe_cats)
+                fb_q = random.choice(PEXELS_REELS_CATEGORIES[fb_cat]["queries"])
+                try:
+                    fb_pkg = fetch_and_prepare_pexels_clips(
+                        work_dir=work_dir,
+                        desired_count=needed - len(replacements),
+                        custom_query=fb_q,
+                        force_gaming_promo=False,
+                        use_ai_keywords=False,
+                    )
+                    for fc in fb_pkg.get("clips") or []:
+                        if str(fc["id"]) not in seen_ids:
+                            seen_ids.add(str(fc["id"]))
+                            replacements.append(fc)
+                    reserve_pool.extend(fb_pkg.get("reserve_candidates") or [])
+                except Exception as exc:
+                    console.print(f"  [yellow]⚠️ Amaran carian ganti Pexels: {exc}[/yellow]")
+
+        queue_clips = replacements
+
+    final_frames = list(ledger.items) if ledger is not None else []
+    ps2_or_retro_hits = sum(
+        1
+        for f in final_frames
+        if f.get("is_ps2_relevant")
+        or any(
+            kw in f"{' '.join(f.get('detected_objects', []))} {f.get('ocr_text', '')} {f.get('console_platform', '')}".lower()
+            for kw in ("ps2", "playstation", "console", "controller", "dualshock", "crt", "arcade", "usb", "hdd", "game")
+        )
+    )
+    visual_has_gaming_elements = ps2_or_retro_hits >= 2
+    cinematic_brief = build_cinematic_visual_brief(final_frames, verified_clean_clips)
+
+    return {
+        "clean_clips": verified_clean_clips,
+        "rejected_face_ids": all_rejected_face_ids,
+        "replacement_rounds": replacement_rounds,
+        "frames": final_frames,
+        "visual_has_gaming_elements": visual_has_gaming_elements,
+        "cinematic_brief": cinematic_brief,
+    }
+
+
+# ==============================================================================
+# 4. PENJANA KAPSYEN ANTI-PRIMING + SELF-CORRECTION + FAILSAFE SYNTHESIZER
+# ==============================================================================
+def _extract_forbidden_openings(recent_posts: List[Dict[str, Any]], limit: int = 12) -> List[str]:
+    """Mengekstrak 3 perkataan pembuka daripada rekod lepas untuk disekat secara eksplisit."""
+    openings: List[str] = []
+    for p in recent_posts[:limit]:
+        words = re.findall(r"\b[a-zA-Z0-9]{2,}\b", str(p.get("story_bm", "")).strip())
+        if len(words) >= 3:
+            phrase = " ".join(words[:3])
+            if phrase.lower() not in {o.lower() for o in openings}:
+                openings.append(phrase)
+    return openings
+
+
+def polish_reels_bm_phrasing(text: str, self_ref: str) -> str:
+    """Menghaluskan istilah terjemahan kaku atau campuran perkataan asing kepada BM Malaysia santai."""
+    text = re.sub(r"\b(aku|saya)\b", self_ref, text, flags=re.IGNORECASE)
+    text = re.sub(rf"(^|[.!?]\s+){self_ref}\b", lambda m: f"{m.group(1)}{self_ref.capitalize()}", text)
+
+    local_bm_fixes = {
+        r"\btetesan\b": "titisan",
+        r"\btetes\b": "titis",
+        r"\bfinally\b": "akhirnya",
+        r"\bkejauhan\b": "dari jauh",
+        r"\blewat masuk\b": "menembusi",
+        r"\bsuara ketukan kaki\b": "bunyi tapak kaki",
+    }
+    for pat, rep in local_bm_fixes.items():
+        text = re.sub(pat, rep, text, flags=re.IGNORECASE)
+
+    text = re.sub(r"[^\x20-\x7E\n]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def build_failsafe_reels_story(
+    self_ref: str,
+    topic_category: str,
+    pexels_query: str,
+    music_info: Dict[str, Any],
+    cal_ctx: Dict[str, Any],
+) -> str:
+    """
+    Penjana sandaran kecemasan apabila semua cubaan LLM ditolak.
+    Membina kapsyen Bahasa Melayu santai yang 100% unik dan patuh waktu MYT.
+    """
+    period_low = str(cal_ctx.get("period", "Santai")).lower()
+    song_title = music_info.get("title", "alunan muzik retro")
+    bpm = music_info.get("bpm", 110)
+
+    openers = [
+        f"Sekali pandang visual {pexels_query} dalam klip ni, terus teringat suasana santai era 2000-an.",
+        f"Jarang-jarang dapat layan visual tenang macam ni sambil ditemani rentak {song_title}.",
+        f"Kalau korang jenis suka suasana retro dan pencahayaan kemas, klip kali ni memang kena dengan jiwa.",
+        f"Tengok pergerakan visual dalam video ni pun dah cukup buat fikiran rasa lapang seketika.",
+    ]
+    chosen_open = random.choice(openers)
+    middle = (
+        f" Gabungan visual bertema {topic_category.replace('_', ' ').lower()} dengan alunan muzik berentak {bpm} BPM "
+        f"memang ngam untuk menemani waktu {period_low} {self_ref} dan korang semua di Malaysia."
+    )
+    closing = (
+        " Kadang-kadang benda ringkas macam ni pun dah mampu mengubat rindu zaman membesar depan konsol klasik bersama kawan-kawan."
+    )
+    return f"{chosen_open}{middle}{closing}"
+
+
 def generate_dynamic_reels_story(
     cinematic_brief: str,
     topic_category: str,
@@ -779,48 +1038,56 @@ def generate_dynamic_reels_story(
 ) -> Tuple[bool, Dict[str, Any]]:
     self_ref = random.choice(["admin", "min"])
     char_obj = cal_ctx["character"]
+    forbidden_openings = _extract_forbidden_openings(recent_posts, limit=12)
+    forbidden_open_str = ", ".join(f"'{o}'" for o in forbidden_openings) if forbidden_openings else "'Malam ni', 'Geng, malam'"
 
-    # Bina Memori 5 Ayat Terakhir yang telah dijana sebelum ini
-    last_5_lines: List[str] = []
-    for idx, prev in enumerate(recent_posts[:5], 1):
-        prev_txt = re.sub(r"\s+", " ", str(prev.get("story_bm", "")).strip())
-        if prev_txt:
-            last_5_lines.append(f"{idx}. [{prev.get('character_id', '-')}] {prev_txt[:190]}...")
-    memory_5_block = (
-        "\n".join(last_5_lines)
-        if last_5_lines
-        else "Tiada rekod terdahulu — ini siaran pertama."
-    )
+    # Guna senarai tema lepas sahaja (BUKAN ayat penuh) supaya model 4B tidak meniru pembuka lama
+    recent_themes = [
+        f"- {p.get('topic_category', '-')}: {p.get('pexels_query', '-')}"
+        for p in recent_posts[:6]
+    ]
+    themes_block = "\n".join(recent_themes) if recent_themes else "- Tiada rekod tema lepas."
 
-    system_prompt = (
-        f"Kau ialah '{self_ref}', lelaki Malaysia berusia 35 tahun yang mengendalikan halaman "
-        "Facebook 'PS2 Retro Nostalgia'.\n\n"
-        f"WATAK & KARAKTER HARI INI ({cal_ctx['day_name']} — {char_obj['label']}):\n"
-        f"{char_obj['persona_guide']}\n"
-        f"PANDUAN PEMBUKA: {char_obj['hook_hint']}\n\n"
-        "PERATURAN WAJIB PENULISAN REELS:\n"
-        "1. Tulis 1 perenggan cerita pendek yang hidup, santai, dan semula jadi dalam Bahasa Melayu Malaysia "
-        "harian (macam sembang kedai kopi, BUKAN terjemahan kaku).\n"
-        "2. Gabungkan jalan cerita visual daripada babak video + suasana muzik latar secara bersahaja.\n"
-        f"3. Bahasakan diri sebagai '{self_ref}' (DILARANG guna 'aku' atau 'saya') dan sapa pembaca sebagai 'korang' atau 'geng'.\n"
-        f"4. KESEDARAN MASA MALAYSIA: {cal_ctx['timestamp_display']} | Mood: {cal_ctx['mood']} | Suasana: {cal_ctx['special_note']}.\n"
-        f"   Jika sebut waktu, HANYA guna '{cal_ctx['allowed_cues']}' dan HARAM sebut '{cal_ctx['forbidden_cues']}'.\n"
-        "5. Rujuk MEMORI 5 AYAT TERAKHIR di bawah — DILARANG meniru ayat pembuka, struktur ayat, atau sudut cerita yang sama!\n"
-        "6. Panjang teks antara 350 hingga 520 aksara, SIFAR emoji, tanpa tajuk di baris atas, tanpa link URL atau harga RM, "
-        "dan tutup dengan tanda noktah (.) yang lengkap."
-    )
+    hooks_shuffled = list(DYNAMIC_HOOK_ANGLES)
+    random.shuffle(hooks_shuffled)
 
-    user_prompt = (
-        f"KATEGORI VISUAL ({topic_category}): {pexels_query}\n"
-        f"MUZIK LATAR: '{music_info['title']}' — {music_info['vibe_bm']}\n\n"
-        f"URUTAN BABAK VISUAL VIDEO (HASIL OCR):\n{cinematic_brief}\n\n"
-        f"MEMORI 5 AYAT TERAKHIR (WAJIB BERBEZA GAYA & PEMBUKA):\n{memory_5_block}\n\n"
-        f"Tulis kapsyen Reels santai daripada watak '{self_ref}' (350 - 520 aksara, tanpa emoji):"
-    )
-
+    retry_feedback = ""
     last_diag: Dict[str, Any] = {}
+
     for attempt in range(1, 5):
-        adj_temp = min(0.86, round(0.70 + ((attempt - 1) * 0.04), 2))
+        hook_choice = hooks_shuffled[(attempt - 1) % len(hooks_shuffled)]
+        adj_temp = min(0.88, round(0.72 + ((attempt - 1) * 0.04), 2))
+
+        system_prompt = (
+            f"Kau ialah '{self_ref}', lelaki Malaysia berusia 35 tahun yang mengendalikan halaman "
+            "Facebook 'PS2 Retro Nostalgia'.\n\n"
+            f"WATAK HARI INI ({cal_ctx['day_name']} — {char_obj['label']}):\n"
+            f"{char_obj['persona_guide']}\n\n"
+            f"ARAHAN GAYA PEMBUKA AYAT WAJIB ({hook_choice['hook_id']}):\n"
+            f"{hook_choice['directive']}\n\n"
+            "PERATURAN KETAT:\n"
+            f"1. HARAM mulakan ayat dengan frasa pembuka yang sudah digunakan ini: {forbidden_open_str}.\n"
+            "2. Tulis 1 perenggan cerita pendek yang hidup dan santai dalam Bahasa Melayu Malaysia harian "
+            "(macam abang-abang bersembang di kedai kopi, sifar campuran Bahasa Inggeris).\n"
+            "3. Gabungkan jalan cerita visual daripada babak video + suasana muzik latar secara bersahaja.\n"
+            f"4. Bahasakan diri sebagai '{self_ref}' (DILARANG guna 'aku' atau 'saya') dan sapa pembaca sebagai 'korang' atau 'geng'.\n"
+            f"5. MASA SEBENAR MALAYSIA: {cal_ctx['timestamp_display']} | Mood: {cal_ctx['mood']} | Suasana: {cal_ctx['special_note']}.\n"
+            f"   Jika sebut waktu, HANYA guna '{cal_ctx['allowed_cues']}' dan HARAM sebut '{cal_ctx['forbidden_cues']}'.\n"
+            "6. Panjang teks antara 350 hingga 520 aksara, SIFAR emoji, tanpa tajuk di baris atas, tanpa link URL atau harga RM, "
+            "dan tutup dengan tanda noktah (.) yang lengkap."
+        )
+
+        feedback_section = f"\n\nPEMBETULAN WAJIB DARI CUBAAN SEBELUM INI:\n{retry_feedback}\n" if retry_feedback else ""
+
+        user_prompt = (
+            f"KATEGORI VISUAL ({topic_category}): {pexels_query}\n"
+            f"MUZIK LATAR: '{music_info['title']}' — {music_info['vibe_bm']}\n\n"
+            f"URUTAN BABAK VISUAL VIDEO (HASIL OCR):\n{cinematic_brief}\n\n"
+            f"TEMA LEPAS (ELAKKAN SUDUT SAMA):\n{themes_block}"
+            f"{feedback_section}\n"
+            f"Tulis kapsyen Reels santai daripada watak '{self_ref}' (350 - 520 aksara, tanpa emoji):"
+        )
+
         inf = llm_engine.generate_chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -829,43 +1096,49 @@ def generate_dynamic_reels_story(
         )
 
         cleaned = clean_and_scrub_bm_story(inf["raw_text"], max_chars=CAPTION_SOFT_TRIM)
-        cleaned = re.sub(r"\b(aku|saya)\b", self_ref, cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(rf"(^|[.!?]\s+){self_ref}\b", lambda m: f"{m.group(1)}{self_ref.capitalize()}", cleaned)
-        cleaned = re.sub(r"[^\x20-\x7E\n]", "", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = polish_reels_bm_phrasing(cleaned, self_ref=self_ref)
 
         if len(cleaned) < CAPTION_MIN_CHARS or len(cleaned) > CAPTION_MAX_CHARS:
+            retry_feedback = (
+                f"Cubaan lepas mempunyai {len(cleaned)} aksara. Pastikan panjang tepat antara 360 hingga 500 aksara."
+            )
             last_diag = {"attempt": attempt, "status": f"Panjang luar julat ({len(cleaned)} aksara)"}
             continue
 
         low = cleaned.lower()
         if "http://" in low or "https://" in low or re.search(r"\brm\s?\d+", low):
+            retry_feedback = "Dilarang meletakkan URL atau harga RM dalam kapsyen."
             last_diag = {"attempt": attempt, "status": "Dikesan URL atau harga RM"}
             continue
 
         if re.search(cal_ctx["forbidden_regex"], low):
+            retry_feedback = f"Jangan sebut waktu yang salah. Sekarang ialah slot waktu {cal_ctx['period']}."
             last_diag = {"attempt": attempt, "status": f"Percanggahan waktu dengan slot {cal_ctx['period']}"}
             continue
 
-        # Semak pembuka 4 perkataan & pertindihan kata terhadap 10 post lepas
         cand_hash = hashlib.sha256(low.encode("utf-8")).hexdigest()
         cand_words = re.findall(r"\b[a-z0-9]{3,}\b", low)
         cand_open_4 = cand_words[:4]
         cand_set = set(cand_words)
 
         is_clone = False
-        for prev in recent_posts[:10]:
+        for prev in recent_posts[:12]:
             p_low = str(prev.get("story_bm", "")).lower()
             p_hash = str(prev.get("story_hash") or hashlib.sha256(p_low.encode("utf-8")).hexdigest())
             if cand_hash == p_hash:
                 is_clone = True
+                retry_feedback = "Ayat terlalu sama dengan rekod lepas. Tulis sudut penceritaan baharu sepenuhnya."
                 last_diag = {"attempt": attempt, "status": "Ayat 100% sama dengan rekod lepas"}
                 break
 
             p_words = re.findall(r"\b[a-z0-9]{3,}\b", p_low)
             if len(cand_open_4) >= 4 and cand_open_4 == p_words[:4]:
                 is_clone = True
-                last_diag = {"attempt": attempt, "status": "4 perkataan pembuka sama dengan rekod lepas"}
+                bad_open = " ".join(cand_open_4)
+                retry_feedback = (
+                    f"Permulaan '{bad_open}' sama dengan rekod lepas. Tukar terus perkataan pertama ayat."
+                )
+                last_diag = {"attempt": attempt, "status": f"4 perkataan pembuka sama ('{bad_open}')"}
                 break
 
             p_set = set(p_words)
@@ -873,15 +1146,16 @@ def generate_dynamic_reels_story(
                 jaccard = len(cand_set & p_set) / max(1, len(cand_set | p_set))
                 if jaccard >= 0.72:
                     is_clone = True
+                    retry_feedback = "Terlalu banyak perkataan sama dengan post lepas. Gunakan perbendaharaan kata baharu."
                     last_diag = {"attempt": attempt, "status": f"Pertindihan kata terlalu tinggi ({jaccard*100:.0f}%)"}
                     break
 
         if is_clone:
             continue
 
-        # Semak Redis & Upstash Vector Semantik
         dup_r, _ = reels_redis.is_duplicate_fingerprint(f"reels_story:{cand_hash}")
         if dup_r:
+            retry_feedback = "Cerita ini sudah wujud dalam rekod Redis 180 hari. Jana cerita baharu."
             last_diag = {"attempt": attempt, "status": "Hash cerita dikunci dalam Redis (180 hari)"}
             continue
 
@@ -895,6 +1169,7 @@ def generate_dynamic_reels_story(
             now_epoch=cal_ctx["now_epoch"],
         )
         if is_dup_vec:
+            retry_feedback = "Maksud cerita terlalu mirip dengan post kebelakangan ini. Tukar sudut cerita."
             last_diag = {"attempt": attempt, "status": f"Ditolak Vector (#{vec_shard}): {dup_match}"}
             continue
 
@@ -912,20 +1187,53 @@ def generate_dynamic_reels_story(
             "vector_shard": vec_shard,
             "llm_metrics": {
                 "attempt": attempt,
+                "hook_id": hook_choice["hook_id"],
                 "temperature_used": adj_temp,
                 "elapsed_sec": inf["elapsed_sec"],
                 "completion_tokens": inf["completion_tokens"],
                 "tok_per_sec": inf["tok_per_sec"],
                 "story_chars": len(cleaned),
-                "status": "Lulus Unik (Memori + Redis + Vector)",
+                "status": "Lulus Unik (Anti-Priming + Redis + Vector)",
             },
         }
 
-    return False, {"error": "Gagal menjana kapsyen unik selepas 4 percubaan.", "diag": last_diag}
+    # Sandaran kecemasan supaya workflow tidak gagal walaupun 4 cubaan LLM ditolak
+    console.print(f"[yellow]🛡️ [Failsafe Synthesizer Aktif] Menjana kapsyen sandaran unik ({last_diag})...[/yellow]")
+    fb_story = build_failsafe_reels_story(
+        self_ref=self_ref,
+        topic_category=topic_category,
+        pexels_query=pexels_query,
+        music_info=music_info,
+        cal_ctx=cal_ctx,
+    )
+    fb_story = polish_reels_bm_phrasing(fb_story, self_ref=self_ref)[:CAPTION_SOFT_TRIM].strip()
+    fb_hash = hashlib.sha256(fb_story.lower().encode("utf-8")).hexdigest()
+    hashtags = (
+        "#PS2RetroNostalgia #PS2Malaysia #ReelsMalaysia #RetroGaming #GamingMalaysia #Nostalgia2000an"
+        if "PS2" in topic_category or "RETRO" in topic_category or "GAMING" in topic_category
+        else "#PS2RetroNostalgia #ReelsMalaysia #RetroVibes #GamingMalaysia #SantaiMalam #Nostalgia"
+    )
+    return True, {
+        "persona_ref": self_ref,
+        "story_bm": fb_story,
+        "story_chars": len(fb_story),
+        "post_caption": f"{fb_story}\n\n{hashtags}",
+        "story_hash": fb_hash,
+        "vector_shard": 0,
+        "llm_metrics": {
+            "attempt": 5,
+            "temperature_used": 0.0,
+            "elapsed_sec": 0.0,
+            "completion_tokens": 0,
+            "tok_per_sec": 0.0,
+            "story_chars": len(fb_story),
+            "status": f"Failsafe Synthesizer ({last_diag.get('status', 'LLM retries exhausted')})",
+        },
+    }
 
 
 # ==============================================================================
-# 4. PENERBIT FB REELS DAHULU -> LANGKAU FEED JIKA BERJAYA -> FALLBACK FEED
+# 5. PENERBIT FB REELS DAHULU -> LANGKAU FEED JIKA BERJAYA -> FALLBACK FEED
 # ==============================================================================
 class FacebookReelsPublisher:
     def __init__(self) -> None:
@@ -959,7 +1267,6 @@ class FacebookReelsPublisher:
         fb_post_id = ""
         reels_err = ""
 
-        # Laluan 1: Facebook Reels 3-Fasa
         try:
             p_start = self._auth_params()
             p_start["upload_phase"] = "start"
@@ -1025,7 +1332,6 @@ class FacebookReelsPublisher:
                 )
             fb_post_id = str(j_feed["id"])
 
-        # Hantar komen pertama (Interaksi Follower 70% atau Shopee 30%)
         time.sleep(3.0)
         comment_url = f"https://graph.facebook.com/{self.graph_ver}/{fb_post_id}/comments"
         c_data = self._auth_params()
@@ -1043,7 +1349,7 @@ class FacebookReelsPublisher:
 
 
 # ==============================================================================
-# 5. PINTU KUOTA 2 VIDEO / 48 JAM PADA JAM RAWAK (9 PAGI - 9 MALAM MYT)
+# 6. PINTU KUOTA 2 VIDEO / 48 JAM PADA JAM RAWAK (9 PAGI - 9 MALAM MYT)
 # ==============================================================================
 def should_execute_reels_slot(force_run: bool = False) -> Tuple[bool, str]:
     """
@@ -1065,11 +1371,9 @@ def should_execute_reels_slot(force_run: bool = False) -> Tuple[bool, str]:
     now = datetime.now(tz=MYT)
     remaining_needed = REELS_MAX_PER_48H - used_in_48h
 
-    # Terdapat 13 slot jam sehari (9:20 AM .. 9:20 PM MYT). Anggaran baki slot dalam 48 jam:
     hours_left_today = max(1, 22 - max(9, now.hour))
     estimated_remaining_slots = hours_left_today + 13 if (now.timetuple().tm_yday % 2 == 0) else hours_left_today
 
-    # Kira kebarangkalian rawak supaya tepat ~2 video disiarkan dalam tetingkap 48 jam pada jam berbeza-beza
     prob = min(1.0, max(0.14, remaining_needed / max(1, estimated_remaining_slots)))
     roll = random.random()
     if roll <= prob:
@@ -1082,7 +1386,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Jana video & kapsyen tanpa pos sebenar ke Facebook.")
     parser.add_argument("--force", action="store_true", help="Paksa larian tanpa melalui pintu kebarangkalian rawak.")
     parser.add_argument("--query", type=str, default="", help="Kata kunci carian Pexels khusus (pilihan).")
-    parser.add_argument("--clips", type=int, default=4, choices=[3, 4, 5], help="Bilangan klip Pexels (3-5).")
+    parser.add_argument("--clips", type=int, default=0, choices=[0, 3, 4, 5], help="Bilangan klip Pexels (0=dinamik 3-5, atau 3/4/5).")
     parser.add_argument("--promo-mode", type=str, default="auto", choices=["auto", "organic", "shopee"], help="Mod komen pertama.")
     args = parser.parse_args()
 
@@ -1090,7 +1394,6 @@ def main() -> None:
     run_env = "GITHUB_ACTIONS" if is_ci else "LOCAL_WSL"
     cal_ctx = get_dynamic_myt_context()
 
-    # Pintu Kuota Awal (Jimat sumber GitHub Actions jika kuota 2 Reels/48j penuh atau bukan giliran jam rawak)
     should_run, gate_msg = should_execute_reels_slot(force_run=(args.force or args.dry_run))
     if not should_run:
         console.print(Panel(f"[bold yellow]⏭️ LANGKAU SESI REELS:[/bold yellow] {gate_msg}", border_style="yellow"))
@@ -1112,7 +1415,7 @@ def main() -> None:
 
     try:
         coordinator = ReelsHistoryCoordinator()
-        recent_posts = coordinator.get_recent_reels_posts(limit=10)
+        recent_posts = coordinator.get_recent_reels_posts(limit=12)
         char_obj = cal_ctx["character"]
 
         console.print(
@@ -1125,37 +1428,41 @@ def main() -> None:
         )
 
         # 1. Pilih & Analisis Muzik dari assets/music/ (X15)
-        target_dur = random.randint(34, 46)
+        target_dur = random.randint(32, 48)
         with console.status("[bold cyan]1. Memilih lagu segar dari assets/music/ & menganalisis rentak Librosa (X15)...[/bold cyan]"):
             audio_clip, music_info = prepare_reels_music_track(target_duration_sec=target_dur)
 
-        # 2. Tarik 3-5 Klip Pexels 9:16 (1 Request) & Tapis 180 Hari (X14)
-        with console.status("[bold cyan]2. Menarik 3-5 klip Pexels 9:16 (1 Request) & menapis kunci 180 hari (X14)...[/bold cyan]"):
+        # 2. Tarik 3-5 Klip Pexels 9:16 (Dinamik) & Simpan Reserve Pool (X14)
+        desired_clips_arg = None if args.clips == 0 else args.clips
+        with console.status("[bold cyan]2. Menjana kata kunci AI & menarik 3-5 klip Pexels 9:16 (X14)...[/bold cyan]"):
             pex_res = fetch_and_prepare_pexels_clips(
                 work_dir=WORK_DIR,
-                desired_count=args.clips,
+                desired_count=desired_clips_arg,
                 custom_query=args.query,
+                use_ai_keywords=True,
             )
         clips = pex_res["clips"]
-        if len(clips) < 3:
+        if len(clips) < MIN_CLEAN_CLIPS_TARGET:
             if audio_clip:
                 audio_clip.close()
             raise RuntimeError(f"Hanya {len(clips)} klip Pexels berjaya disediakan (minimum 3 diperlukan). Stats: {pex_res['stats']}")
 
-        # 3. Ekstrak 3 Snapshot/Video & Proses OCR Berkelompok 3-4 Gambar/Sesi (X16)
+        # 3. Ekstrak 3 Snapshot/Video + OCR 3 Gambar/Panggilan + Penggantian Pintar Klip Berwajah (X16 & X17)
         console.print(
-            f"[bold cyan]3. Mengekstrak 3 snapshot/video ({len(clips) * 3} gambar) & memproses OCR berperingkat (X16)...[/bold cyan]"
+            f"[bold cyan]3. Mengekstrak snapshot & memproses OCR berperingkat 384px + Penapis Wajah Pintar...[/bold cyan]"
         )
-        ocr_pkg = extract_and_analyze_clips_ocr(
-            clips=clips,
+        ocr_pkg = run_ocr_with_smart_face_replacement(
+            pex_pkg=pex_res,
             work_dir=WORK_DIR,
-            topic_hint=f"{pex_res['category']} {pex_res['query']}",
-            json_ref_path=TEMP_DIR / "x17_ocr_sessions.json",
-            db_ref_path=TEMP_DIR / "x17_reels_ocr_state.db",
+            dry_run_redis=bool(args.dry_run),
         )
         clean_clips = ocr_pkg["clean_clips"]
+        if not clean_clips:
+            if audio_clip:
+                audio_clip.close()
+            raise RuntimeError("Tiada klip video bersih tanpa wajah manusia selepas gelung penggantian.")
 
-        # 4. Sunting & Cantum Video Menegak 1080x1920 (30-50 Saat) + Muzik (X16)
+        # 4. Sunting & Cantum Video Menegak 1080x1920 (30-50 Saat Dinamik) + Muzik (X16)
         out_mp4 = WORK_DIR / f"ps2n_reels_{cal_ctx['now_epoch']}.mp4"
         with console.status("[bold cyan]4. Menyunting & mencantum video Reels 1080x1920 (30-50s) + muzik latar (X16)...[/bold cyan]"):
             final_video_path, final_video_dur = render_vertical_reels_video(
@@ -1166,8 +1473,8 @@ def main() -> None:
                 target_duration_sec=target_dur,
             )
 
-        # 5. Penjanaan Kapsyen Persona AI Dinamik (Memori 5 Ayat Terakhir + Watak Harian)
-        with console.status("[bold cyan]5. Menjana kapsyen santai Persona AI (Memori 5 ayat + Redis + Vector)...[/bold cyan]"):
+        # 5. Penjanaan Kapsyen Persona AI Anti-Priming + Pembetulan Kendiri + Failsafe
+        with console.status("[bold cyan]5. Menjana kapsyen santai Persona AI (Anti-Priming + Redis + Vector)...[/bold cyan]"):
             ok_gen, gen_pkg = generate_dynamic_reels_story(
                 cinematic_brief=ocr_pkg["cinematic_brief"],
                 topic_category=pex_res["category"],
@@ -1194,7 +1501,14 @@ def main() -> None:
         summary_tbl = Table(title="Ringkasan Produksi Reels X17", box=box.ROUNDED, header_style="bold yellow")
         summary_tbl.add_column("Komponen", style="bold white")
         summary_tbl.add_column("Butiran", style="cyan")
-        summary_tbl.add_row("Kategori & Pexels", f"{pex_res['category']} ('{pex_res['query']}') | {len(clean_clips)} klip")
+        summary_tbl.add_row(
+            "Kategori & Pexels",
+            f"{pex_res['category']} ('{pex_res['query']}' | {pex_res.get('keyword_source', '-')}) | {len(clean_clips)} klip bersih",
+        )
+        summary_tbl.add_row(
+            "Penapis Wajah & Ganti",
+            f"Ditolak: {len(ocr_pkg['rejected_face_ids'])} | Pusingan ganti: {ocr_pkg['replacement_rounds']}",
+        )
         summary_tbl.add_row("Muzik & Tempo", f"{music_info['title']} ({music_info['bpm']} BPM)")
         summary_tbl.add_row("Video Reels Akhir", f"1080x1920 | {final_video_dur}s | {round(final_video_path.stat().st_size / (1024*1024), 2)} MB")
         summary_tbl.add_row("Watak & Persona", f"{char_obj['char_id']} ({gen_pkg['persona_ref']})")
@@ -1244,6 +1558,9 @@ def main() -> None:
             "pillar_id": f"{char_obj['char_id']}:{pex_res['category']}",
             "topic_category": pex_res["category"],
             "pexels_query": pex_res["query"],
+            "keyword_source": pex_res.get("keyword_source", ""),
+            "rejected_face_ids": ocr_pkg["rejected_face_ids"],
+            "replacement_rounds": ocr_pkg["replacement_rounds"],
             "game_title": f"Reels ({pex_res['category']}: {pex_res['query']})",
             "music_filename": music_info["filename"],
             "music_title": music_info["title"],

@@ -3,20 +3,20 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - PENARIK & PENAPIS VIDEO PEXELS 9:16 (X14)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X14_pexels_video_fetcher.py
 #
-# FUNGSI UTAMA (EDISI NAIK TARAF + PEMBERSIH STREAM FFMPEG ANTI-TMCD):
+# FUNGSI UTAMA (EDISI NAIK TARAF + RESERVE POOL + ANTI-FACE 180 HARI):
 # 1. Penjana Kata Kunci AI Pintar (X06 Qwen3.5-4B): Menjana calon kata kunci B-Roll
 #    pendek (2-3 perkataan Inggeris) yang fokus pada objek, pencahayaan retro,
 #    suasana tenang, atau pandangan belakang/sisi tanpa wajah hadapan.
 # 2. Guardrail Kata Kunci Berlapis (X04 Redis + X05 Upstash Vector):
 #    - Memori 15 kata kunci terakhir + kunci tepat 14 hari di Redis (`ps2n_reels`).
 #    - Penapis semantik Vector (skor >= 0.84 dalam 7 hari disekat).
-# 3. Penapis Ketat Bebas Wajah & Orang Ramai: Menolak potret, selfie, dan
-#    kumpulan ramai, tetapi membenarkan objek tulen & pandangan belakang/sisi.
-# 4. Penjara Anti-Ulangan Video 6 Bulan (180 Hari): Menyemak ID video Pexels &
-#    cincangan SHA-256 terhadap Upstash Redis (`ps2n_reels`) serta SQLite.
+# 3. Pemilihan Dinamik 3 hingga 5 Klip + Baki Calon Simpanan (`reserve_candidates`):
+#    Menyimpan baki calon video daripada 80 hasil carian Pexels supaya X17
+#    boleh menggantikan klip berwajah secara automatik tanpa panggilan API baharu.
+# 4. Penjara Anti-Ulangan Video 6 Bulan (180 Hari): Menyemak & mengunci ID video
+#    Pexels (termasuk klip yang ditolak kerana wajah) serta SHA-256 selama 180 hari.
 # 5. Pembersih Stream FFmpeg (`-dn -sn -map_metadata -1 -write_tmcd 0`) +
-#    Pengesahan Bacaan MoviePy (`_verify_moviepy_readable`) supaya tiada klip
-#    `Stream group` / `tmcd` melepasi ke X16.
+#    Pengesahan Bacaan MoviePy (`_verify_moviepy_readable`).
 # ==============================================================================
 
 import hashlib
@@ -486,7 +486,6 @@ def sanitize_mp4_strip_tmcd_and_audio(raw_mp4: Path, clean_mp4: Path) -> bool:
     """
     ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
 
-    # Langkah 1: Stream copy pantas tanpa trek data/timecode/audio
     cmd_copy = [
         ffmpeg_bin,
         "-y",
@@ -516,7 +515,6 @@ def sanitize_mp4_strip_tmcd_and_audio(raw_mp4: Path, clean_mp4: Path) -> bool:
 
     clean_mp4.unlink(missing_ok=True)
 
-    # Langkah 2: Fallback re-encode bersih untuk menghapuskan struktur container MP4 pelik
     cmd_reencode = [
         ffmpeg_bin,
         "-y",
@@ -620,6 +618,85 @@ def choose_balanced_category_and_query(
     return picked_cat, random.choice(seed_list), is_gaming_eligible, "SEED_BANK_FALLBACK"
 
 
+def _download_single_pexels_candidate(
+    cand: Dict[str, Any],
+    work_dir: Path,
+    seen_batch_sha256: Set[str],
+    existing_ids: Set[str],
+) -> bool:
+    """Memuat turun, membersihkan trek `tmcd`, dan mengesahkan SHA-256 satu calon klip."""
+    raw_path = work_dir / f"raw_{cand['id']}.mp4"
+    clean_path = work_dir / f"clip_{cand['id']}.mp4"
+    try:
+        r_dl = requests.get(
+            cand["download_link"],
+            headers={"User-Agent": "Mozilla/5.0"},
+            stream=True,
+            timeout=35,
+        )
+        if r_dl.status_code != 200:
+            return False
+
+        with open(raw_path, "wb") as f_out:
+            for chunk in r_dl.iter_content(chunk_size=1024 * 512):
+                if chunk:
+                    f_out.write(chunk)
+
+        if not raw_path.exists() or raw_path.stat().st_size < 50_000:
+            raw_path.unlink(missing_ok=True)
+            return False
+
+        sanitized_ok = sanitize_mp4_strip_tmcd_and_audio(raw_path, clean_path)
+        raw_path.unlink(missing_ok=True)
+        if not sanitized_ok:
+            clean_path.unlink(missing_ok=True)
+            return False
+
+        sha256_hex = compute_file_sha256(clean_path)
+        dup_sha, _ = reels_redis.is_duplicate_fingerprint(f"pexels_sha256:{sha256_hex}")
+        if dup_sha or sha256_hex in seen_batch_sha256 or _is_video_used_in_sqlite_180d(cand["id"], sha256_hex):
+            clean_path.unlink(missing_ok=True)
+            return False
+
+        seen_batch_sha256.add(sha256_hex)
+        existing_ids.add(str(cand["id"]))
+        cand["local_path"] = clean_path
+        cand["sha256"] = sha256_hex
+        cand["size_mb"] = round(clean_path.stat().st_size / (1024 * 1024), 2)
+        return True
+    except Exception:
+        raw_path.unlink(missing_ok=True)
+        clean_path.unlink(missing_ok=True)
+        return False
+
+
+def download_and_prepare_reserve_clips(
+    reserve_candidates: List[Dict[str, Any]],
+    work_dir: Path,
+    needed_count: int,
+    seen_batch_sha256: Set[str],
+    existing_ids: Set[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Memuat turun `needed_count` klip pengganti daripada `reserve_candidates`
+    tanpa membuat sebarang panggilan API Pexels tambahan.
+    Memulangkan: (klip_pengganti_berjaya, baki_reserve_terkini)
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    new_clips: List[Dict[str, Any]] = []
+    remaining_pool = list(reserve_candidates)
+
+    while remaining_pool and len(new_clips) < needed_count:
+        cand = remaining_pool.pop(0)
+        cid = str(cand.get("id", "")).strip()
+        if not cid or cid in existing_ids:
+            continue
+        if _download_single_pexels_candidate(cand, work_dir, seen_batch_sha256, existing_ids):
+            new_clips.append(cand)
+
+    return new_clips, remaining_pool
+
+
 def _query_and_download_pexels_batch(
     api_key: str,
     query_str: str,
@@ -627,8 +704,8 @@ def _query_and_download_pexels_batch(
     desired_count: int,
     seen_batch_sha256: Set[str],
     existing_ids: Set[str],
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Menjalankan 1 permintaan Pexels API dan memuat turun klip terbaik yang lulus tapisan."""
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
+    """Menjalankan 1 permintaan Pexels API, memuat turun klip utama, dan memulangkan baki calon."""
     resp = requests.get(
         "https://api.pexels.com/videos/search",
         headers={"Authorization": api_key},
@@ -700,77 +777,40 @@ def _query_and_download_pexels_batch(
             )
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    top_pool = candidates[: max(desired_count * 4, 15)]
-    random.shuffle(top_pool)
+    top_slice = candidates[: max(desired_count * 4, 24)]
+    random.shuffle(top_slice)
+    tail_slice = candidates[max(desired_count * 4, 24) :]
+    ordered_candidates = top_slice + tail_slice
 
     downloaded: List[Dict[str, Any]] = []
-    for cand in top_pool:
+    reserve_candidates: List[Dict[str, Any]] = []
+
+    for idx, cand in enumerate(ordered_candidates):
         if len(downloaded) >= desired_count:
+            reserve_candidates.extend(ordered_candidates[idx:])
             break
-
-        raw_path = work_dir / f"raw_{cand['id']}.mp4"
-        clean_path = work_dir / f"clip_{cand['id']}.mp4"
-        try:
-            r_dl = requests.get(
-                cand["download_link"],
-                headers={"User-Agent": "Mozilla/5.0"},
-                stream=True,
-                timeout=35,
-            )
-            if r_dl.status_code != 200:
-                continue
-
-            with open(raw_path, "wb") as f_out:
-                for chunk in r_dl.iter_content(chunk_size=1024 * 512):
-                    if chunk:
-                        f_out.write(chunk)
-
-            if not raw_path.exists() or raw_path.stat().st_size < 50_000:
-                raw_path.unlink(missing_ok=True)
-                continue
-
-            sanitized_ok = sanitize_mp4_strip_tmcd_and_audio(raw_path, clean_path)
-            raw_path.unlink(missing_ok=True)
-            if not sanitized_ok:
-                clean_path.unlink(missing_ok=True)
-                continue
-
-            sha256_hex = compute_file_sha256(clean_path)
-            dup_sha, _ = reels_redis.is_duplicate_fingerprint(f"pexels_sha256:{sha256_hex}")
-            if dup_sha or sha256_hex in seen_batch_sha256 or _is_video_used_in_sqlite_180d(cand["id"], sha256_hex):
-                clean_path.unlink(missing_ok=True)
-                skipped_180d += 1
-                continue
-
-            seen_batch_sha256.add(sha256_hex)
-            existing_ids.add(cand["id"])
-            cand["local_path"] = clean_path
-            cand["sha256"] = sha256_hex
-            cand["size_mb"] = round(clean_path.stat().st_size / (1024 * 1024), 2)
+        if _download_single_pexels_candidate(cand, work_dir, seen_batch_sha256, existing_ids):
             downloaded.append(cand)
-        except Exception:
-            raw_path.unlink(missing_ok=True)
-            clean_path.unlink(missing_ok=True)
 
     batch_stats = {
         "raw_candidates": len(raw_videos),
         "skipped_face_filter": skipped_face,
         "skipped_180d_dedup": skipped_180d,
     }
-    return downloaded, batch_stats
+    return downloaded, reserve_candidates, batch_stats
 
 
 def fetch_and_prepare_pexels_clips(
     work_dir: Path,
-    desired_count: int = 4,
+    desired_count: Optional[int] = None,
     custom_query: str = "",
     force_gaming_promo: Optional[bool] = None,
     use_ai_keywords: bool = True,
 ) -> Dict[str, Any]:
     """
     Menarik calon video menegak 9:16 (1 request utama Pexels API dengan kata kunci AI),
-    menapis menggunakan Redis & SQLite (180 hari / 6 bulan), dan memuat turun
-    3-5 klip terbaik yang telah disahkan boleh dibaca oleh MoviePy.
+    memilih secara dinamik 3 hingga 5 klip terbaik, dan menyimpan baki calon
+    (`reserve_candidates`) untuk penggantian automatik jika ada klip berwajah.
     """
     api_key = (
         getattr(cfg, "PS2N_PEXELS_API_KEY", "")
@@ -780,7 +820,7 @@ def fetch_and_prepare_pexels_clips(
         raise RuntimeError("Kunci PS2N_PEXELS_API_KEY tiada dalam persekitaran.")
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    desired_count = max(3, min(5, desired_count))
+    target_clips = random.choice([3, 4, 5]) if desired_count is None else max(3, min(5, int(desired_count)))
 
     category_name, query_str, is_gaming_eligible, kw_source = choose_balanced_category_and_query(
         custom_query=custom_query,
@@ -792,11 +832,11 @@ def fetch_and_prepare_pexels_clips(
     seen_ids: Set[str] = set()
     api_requests_used = 1
 
-    prepared_clips, st1 = _query_and_download_pexels_batch(
+    prepared_clips, reserve_pool, st1 = _query_and_download_pexels_batch(
         api_key=api_key,
         query_str=query_str,
         work_dir=work_dir,
-        desired_count=desired_count,
+        desired_count=target_clips,
         seen_batch_sha256=seen_shas,
         existing_ids=seen_ids,
     )
@@ -810,15 +850,16 @@ def fetch_and_prepare_pexels_clips(
         if backup_seeds:
             backup_q = random.choice(backup_seeds)
             api_requests_used += 1
-            extra_clips, st2 = _query_and_download_pexels_batch(
+            extra_clips, extra_reserves, st2 = _query_and_download_pexels_batch(
                 api_key=api_key,
                 query_str=backup_q,
                 work_dir=work_dir,
-                desired_count=desired_count - len(prepared_clips),
+                desired_count=target_clips - len(prepared_clips),
                 seen_batch_sha256=seen_shas,
                 existing_ids=seen_ids,
             )
             prepared_clips.extend(extra_clips)
+            reserve_pool.extend(extra_reserves)
             total_raw += st2["raw_candidates"]
             total_skip_face += st2["skipped_face_filter"]
             total_skip_180d += st2["skipped_180d_dedup"]
@@ -828,15 +869,35 @@ def fetch_and_prepare_pexels_clips(
         "query": query_str,
         "keyword_source": kw_source,
         "is_gaming_promo_eligible": is_gaming_eligible,
+        "target_clips_requested": target_clips,
         "clips": prepared_clips,
+        "reserve_candidates": reserve_pool,
+        "seen_shas": list(seen_shas),
+        "seen_ids": list(seen_ids),
         "stats": {
             "api_requests_used": api_requests_used,
             "raw_candidates": total_raw,
             "skipped_face_filter": total_skip_face,
             "skipped_180d_dedup": total_skip_180d,
             "selected_count": len(prepared_clips),
+            "reserve_count": len(reserve_pool),
         },
     }
+
+
+def mark_rejected_face_clips_180d(
+    rejected_clip_ids: List[str],
+    post_uid: str = "face_filter_auto",
+) -> None:
+    """Mengunci ID video Pexels yang ditolak kerana wajah hadapan selama 180 hari."""
+    for vid_id in rejected_clip_ids:
+        clean_id = str(vid_id).strip()
+        if clean_id:
+            reels_redis.mark_dedup_fingerprint(
+                f"pexels_vid:{clean_id}",
+                post_uid=post_uid,
+                ttl_seconds=VIDEO_COOLDOWN_SECONDS,
+            )
 
 
 def mark_pexels_clips_used_6_months(
@@ -897,7 +958,7 @@ def mark_pexels_clips_used_6_months(
 
 if __name__ == "__main__":
     test_dir = TEMP_DIR / "x14_fetcher_probe"
-    res = fetch_and_prepare_pexels_clips(work_dir=test_dir, desired_count=3, use_ai_keywords=True)
+    res = fetch_and_prepare_pexels_clips(work_dir=test_dir, use_ai_keywords=True)
     tbl = Table(
         title=f"Ujian Kendiri X14 :: {res['category']} ('{res['query']}' | {res['keyword_source']})",
         box=box.ROUNDED,

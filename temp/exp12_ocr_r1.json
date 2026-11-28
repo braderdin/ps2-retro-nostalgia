@@ -1,0 +1,145 @@
+{
+  "updated_at_myt": "2026-11-29T00:19:24.332704+08:00",
+  "total_frames_analyzed": 7,
+  "frames": [
+    {
+      "batch_no": 1,
+      "clip_order": 1,
+      "clip_id": "30912267",
+      "frame_no": 1,
+      "timestamp_sec": 6.31,
+      "compressed_kb": 13.09,
+      "detected_objects": [
+        "meja",
+        "cawan",
+        "buku"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": true,
+      "visual_category": "cat_storage_tech",
+      "scene_description": "Suasana malam yang tenang sambil membaca buku.",
+      "recorded_at_iso": "2026-11-29T00:08:53.821563+08:00"
+    },
+    {
+      "batch_no": 1,
+      "clip_order": 1,
+      "clip_id": "30912267",
+      "frame_no": 2,
+      "timestamp_sec": 17.52,
+      "compressed_kb": 12.31,
+      "detected_objects": [
+        "meja",
+        "cawan",
+        "buku"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": true,
+      "visual_category": "cat_storage_tech",
+      "scene_description": "Malam yang sepi dan hangat untuk bersantai.",
+      "recorded_at_iso": "2026-11-29T00:08:53.952143+08:00"
+    },
+    {
+      "batch_no": 2,
+      "clip_order": 1,
+      "clip_id": "30912267",
+      "frame_no": 3,
+      "timestamp_sec": 28.73,
+      "compressed_kb": 13.22,
+      "detected_objects": [
+        "meja",
+        "cawan",
+        "buku"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": true,
+      "visual_category": "cat_controller",
+      "scene_description": "Suasana malam yang tenang dengan cahaya lampu hangat.",
+      "recorded_at_iso": "2026-11-29T00:09:47.674263+08:00"
+    },
+    {
+      "batch_no": 2,
+      "clip_order": 2,
+      "clip_id": "6279144",
+      "frame_no": 4,
+      "timestamp_sec": 2.92,
+      "compressed_kb": 5.56,
+      "detected_objects": [
+        "laptop"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": true,
+      "visual_category": "cat_controller",
+      "scene_description": "Layar laptop yang bersinar di dalam bilik gelap.",
+      "recorded_at_iso": "2026-11-29T00:09:47.807740+08:00"
+    },
+    {
+      "batch_no": 4,
+      "clip_order": 3,
+      "clip_id": "35101990",
+      "frame_no": 7,
+      "timestamp_sec": 2.71,
+      "compressed_kb": 11.56,
+      "detected_objects": [
+        "laptop",
+        "candle",
+        "flowers"
+      ],
+      "ocr_text": "MONTE CRISTO ROYAL",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_console_setup",
+      "scene_description": "Suasana malam yang tenang dengan cahaya lilin dan buku klasik.",
+      "recorded_at_iso": "2026-11-29T00:18:46.440718+08:00"
+    },
+    {
+      "batch_no": 4,
+      "clip_order": 3,
+      "clip_id": "35101990",
+      "frame_no": 8,
+      "timestamp_sec": 7.54,
+      "compressed_kb": 11.73,
+      "detected_objects": [
+        "laptop",
+        "candle",
+        "flowers"
+      ],
+      "ocr_text": "MONTE CRISTO ROYAL",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_console_setup",
+      "scene_description": "Cahaya hangat dari lilin mencipta suasana santai di malam hari.",
+      "recorded_at_iso": "2026-11-29T00:18:46.566408+08:00"
+    },
+    {
+      "batch_no": 5,
+      "clip_order": 3,
+      "clip_id": "35101990",
+      "frame_no": 9,
+      "timestamp_sec": 12.36,
+      "compressed_kb": 11.72,
+      "detected_objects": [
+        "lamp",
+        "book",
+        "laptop",
+        "flowers"
+      ],
+      "ocr_text": "LEONARDO DA VINCI KONTEN",
+      "console_platform": "General Gaming",
+      "is_ps2_relevant": false,
+      "has_human_face": false,
+      "visual_category": "cat_console_setup",
+      "scene_description": "Suasana malam tenang dengan lampu meja dan buku klasik.",
+      "recorded_at_iso": "2026-11-29T00:19:24.154507+08:00"
+    }
+  ]
+}
