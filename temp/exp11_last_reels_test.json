@@ -1,0 +1,55 @@
+{
+  "post_uid": "exp11_1795870515",
+  "posted_at_iso": "2026-11-28T20:55:15.061012+08:00",
+  "posted_epoch": 1795870515,
+  "persona_ref": "admin",
+  "pillar_id": "CHAR_SABTU_SETUP:GAMING_HARDWARE",
+  "game_title": "Pexels Reels (gaming setup rgb desk)",
+  "story_bm": "Malam ni, malam-malam macam ni memang masa terbaik untuk tengok setup RGB yang bercahaya penuh. Geng, ada rasa nak balik waktu dulu bila kita masih sibuk main PS2 dengan cahaya lampu kuning dan suara ketukan tu? Tapi sekarang, kita dah punya setup RGB yang cantik sampai mata tak boleh fokus ke mana sahaja sebab terlalu banyak warna biru, merah dan ungu yang menyedapkan hati. Tengok gambar-gambar ni, tengok cara dia susun semua monitor dan keyboard itu di atas meja gaming yang tinggi.",
+  "story_chars": 488,
+  "post_caption": "Malam ni, malam-malam macam ni memang masa terbaik untuk tengok setup RGB yang bercahaya penuh. Geng, ada rasa nak balik waktu dulu bila kita masih sibuk main PS2 dengan cahaya lampu kuning dan suara ketukan tu? Tapi sekarang, kita dah punya setup RGB yang cantik sampai mata tak boleh fokus ke mana sahaja sebab terlalu banyak warna biru, merah dan ungu yang menyedapkan hati. Tengok gambar-gambar ni, tengok cara dia susun semua monitor dan keyboard itu di atas meja gaming yang tinggi.\n\n#PS2RetroNostalgia #ReelsMalaysia #RetroGaming #GamingMalaysia #Nostalgia",
+  "shopee_product_code": "TRAFFIC_ONLY",
+  "shopee_product_name": "Mod Trafik & Follower (Tiada Link Produk)",
+  "shopee_url": "-",
+  "comment_text": "(Tiada komen produk — fokus trafik organik Reels)",
+  "fb_post_id": "2330672841047049",
+  "publish_detail": {
+    "publish_mode": "FB_REELS",
+    "fb_post_id": "2330672841047049",
+    "permalink": "https://www.facebook.com/reel/2330672841047049",
+    "feed_skipped": true
+  },
+  "music_meta": {
+    "filename": "Do_Something.mp4",
+    "file_path": "/home/braderdin/ps2-retro-nostalgia/assets/music/Do_Something.mp4",
+    "title": "Do Something",
+    "artist": "Meta Sound Collection",
+    "genre": "Instrumental",
+    "full_duration_sec": 52.4,
+    "bpm": 215.3,
+    "beat_count": 150,
+    "vibe": "Rentak Ceria & Dinamik (215.3 BPM)"
+  },
+  "pexels_stats": {
+    "api_requests_used": 1,
+    "api_latency_ms": 1418.3,
+    "raw_returned": 80,
+    "skipped_face_filter": 35,
+    "skipped_redis_dedup": 0,
+    "vetted_pool": 45,
+    "downloaded_count": 4
+  },
+  "video_output": "/home/braderdin/ps2-retro-nostalgia/temp/exp11_reels_work/exp11_reels_final_1795871360.mp4",
+  "video_duration_sec": 32.0,
+  "ocr_json_ref": "/home/braderdin/ps2-retro-nostalgia/temp/exp11_ocr_sessions.json",
+  "ocr_db_ref": "/home/braderdin/ps2-retro-nostalgia/temp/exp11_reels_debug.db",
+  "llm_metrics": {
+    "attempt": 1,
+    "elapsed_sec": 81.22,
+    "tok_per_sec": 4.43,
+    "story_chars": 488,
+    "vector_shard": 1,
+    "semantic_status": "LULUS_UNIK"
+  },
+  "vector_shard": 1
+}

@@ -1,0 +1,217 @@
+name: X17 - Persona AI #3 Facebook Reels Auto-Poster (2 Reels / 2 Hari | 9AM-9PM MYT)
+
+on:
+  schedule:
+    # Menyemak setiap jam pada minit ke-20 dari 01:20 UTC (9:20 AM MYT) hingga 13:20 UTC (9:20 PM MYT).
+    # X17 menggunakan Upstash Redis Sliding Quota (max 2 Reels / 48 jam) + pintu rawak harian
+    # supaya tepat 2 video Reels diterbitkan setiap 2 hari pada jam rawak berbeza.
+    - cron: "20 1-13 * * *"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run sahaja tanpa post ke Facebook?"
+        required: true
+        default: false
+        type: boolean
+      force_run:
+        description: "Paksa terbit sekarang (abaikan pintu jam rawak)?"
+        required: true
+        default: true
+        type: boolean
+      query:
+        description: "Kata kunci Pexels khusus (kosongkan untuk pilihan automatik):"
+        required: false
+        default: ""
+        type: string
+      promo_mode:
+        description: "Mod komen pertama (auto / organic / shopee):"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - organic
+          - shopee
+
+permissions:
+  contents: write
+
+jobs:
+  publish-fb-reels-persona:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 1. Nyahsekat DNS Runner (Guna Cloudflare 1.1.1.1 & Google 8.8.8.8)
+        run: |
+          sudo sed -i '1inameserver 1.1.1.1\nnameserver 8.8.8.8' /etc/resolv.conf
+          head -n 4 /etc/resolv.conf
+
+      - name: 2. Peruntukan Ruang SSD Runner (Kosongkan ~15GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          df -h
+
+      - name: 3. Bina 10GB Swap Memory di Runner
+        run: |
+          free -h
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo sysctl vm.swappiness=60
+          free -h
+
+      - name: 4. Checkout Repositori, Koleksi Muzik (assets/music) & Pangkalan Data (.db)
+        uses: actions/checkout@v4
+
+      - name: 5. Sediakan Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 6. Pulihkan / Simpan Cache Hugging Face GGUF & VLM
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-hf-qwen35-4b-q4km-v1
+          restore-keys: |
+            ${{ runner.os }}-hf-qwen35-4b-q4km-
+
+      - name: 7. Pulihkan / Simpan Cache Pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-qwen35-reels-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-qwen35-reels-
+            ${{ runner.os }}-pip-qwen35-prod-
+
+      - name: 8. Pasang Kebergantungan Python, Librosa & llama-cpp-python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu "llama-cpp-python>=0.3.8" "huggingface-hub>=0.28.0"
+
+      - name: 9. Jalankan Persona AI #3 Facebook Reels (X17)
+        id: fb_reels_post
+        env:
+          B2_ACCOUNTS_JSON: ${{ secrets.B2_ACCOUNTS_JSON }}
+          REDIS_ACCOUNTS_JSON: ${{ secrets.REDIS_ACCOUNTS_JSON }}
+          VECTOR_ACCOUNTS_JSON: ${{ secrets.VECTOR_ACCOUNTS_JSON }}
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_APP_ID: ${{ secrets.PS2N_FB_APP_ID }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_FB_PAGE_ID: ${{ secrets.PS2N_FB_PAGE_ID }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_GRAPH_VERSION: ${{ secrets.PS2N_FB_GRAPH_VERSION }}
+          CF_WORKER_B2_PROXY_STORAGE: ${{ secrets.CF_WORKER_B2_PROXY_STORAGE }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+          PS2N_PEXELS_API_KEY: ${{ secrets.PS2N_PEXELS_API_KEY }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+          fi
+          if [ "${{ inputs.force_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --force"
+          fi
+          if [ -n "${{ inputs.query }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --query \"${{ inputs.query }}\""
+          fi
+          if [ -n "${{ inputs.promo_mode }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --promo-mode ${{ inputs.promo_mode }}"
+          fi
+          eval "python3 live-engine-01/X17_fb_reels_persona_poster.py $EXTRA_ARGS"
+
+      - name: 10. Hantar Laporan Siaran atau Amaran Ralat ke Telegram Channel (X12)
+        if: always()
+        env:
+          TELEGRAM_ALL_KEY_JSON: ${{ secrets.TELEGRAM_ALL_KEY_JSON }}
+          PS2N_FB_PAGE_TOKEN: ${{ secrets.PS2N_FB_PAGE_TOKEN }}
+          PS2N_FB_APP_SECRET: ${{ secrets.PS2N_FB_APP_SECRET }}
+          PS2N_PROXY_SECRET: ${{ secrets.PS2N_PROXY_SECRET }}
+        run: |
+          POST_STATUS=""
+          if [ -f "temp/x17_last_reels_post.json" ]; then
+            POST_STATUS=$(python3 -c 'import json; print(json.load(open("temp/x17_last_reels_post.json")).get("status", ""))' 2>/dev/null || echo "")
+          fi
+
+          if [ "${{ steps.fb_reels_post.outcome }}" != "success" ]; then
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status failure \
+              --report-json temp/x17_last_reels_post.json \
+              --platform "Facebook Reels (Persona AI #3)" \
+              --channel default \
+              --also-dm \
+              --error-step "fb_reels_post (outcome=${{ steps.fb_reels_post.outcome }}, job=${{ job.status }})"
+          elif [ "$POST_STATUS" = "PUBLISHED" ] || [ "$POST_STATUS" = "DRY_RUN" ]; then
+            python3 live-engine-01/X12_telegram_notifier.py \
+              --status success \
+              --report-json temp/x17_last_reels_post.json \
+              --platform "Facebook Reels (Persona AI #3)" \
+              --channel default
+          else
+            echo "ℹ️ Slot jam ini dilangkau ($POST_STATUS). Laporan Telegram tidak perlu dihantar."
+          fi
+
+      - name: 11. Auto-Commit & Sync Pangkalan Data SQLite (.db) ke GitHub (Auto-Rebase Safe)
+        if: always() && inputs.dry_run != true
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Gabungkan jurnal WAL SQLite ke fail utama sebelum commit
+          python3 -c '
+          import glob, sqlite3
+          for db_file in glob.glob("data/*.db"):
+              try:
+                  conn = sqlite3.connect(db_file)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                  conn.close()
+              except Exception:
+                  pass
+          '
+
+          # Pantau semua fail binari SQLite (termasuk fail pecahan partNNN.db jika auto-split berlaku)
+          git add -f data/*.db 2>/dev/null || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "cron(x17): sync reels sqlite history & shopee counters [skip ci]"
+
+            # Rebase automatik sekiranya remote mempunyai commit baharu semasa job berjalan
+            for i in 1 2 3; do
+              git fetch origin main
+              if git rebase origin/main; then
+                if git push origin main; then
+                  echo "✅ Berjaya sync pangkalan data .db (X17) ke GitHub!"
+                  exit 0
+                fi
+              else
+                git rebase --abort || true
+                git pull origin main --no-rebase -X ours -m "merge(x17): resolve sqlite history sync [skip ci]"
+                if git push origin main; then
+                  echo "✅ Berjaya merge & push pangkalan data .db (X17) ke GitHub!"
+                  exit 0
+                fi
+              fi
+              echo "⚠️ Percubaan $i gagal kerana remote berubah, mencuba semula..."
+              sleep 2
+            done
+            exit 1
+          else
+            echo "ℹ️ Tiada perubahan rekod pangkalan data dikesan."
+          fi
+
+      - name: 12. Muat Naik Laporan JSON Hantaran X17
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x17-fb-reels-post-report
+          path: temp/x17_last_reels_post.json
+          retention-days: 7
+          if-no-files-found: ignore

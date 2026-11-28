@@ -1,0 +1,84 @@
+{
+  "updated_at": "2026-11-28T20:57:30.712901+08:00",
+  "total_frames_processed": 4,
+  "frames": [
+    {
+      "batch_no": 1,
+      "frame_no": 1,
+      "clip_id": "8128352",
+      "timestamp_sec": 1.18,
+      "compressed_kb": 22.46,
+      "detected_objects": [
+        "gaming setup",
+        "monitors",
+        "keyboard",
+        "mouse",
+        "people"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "visual_category": "cat_multiplayer",
+      "has_human_face": true,
+      "retro_nostalgia_angle": "Suasana gaming modern yang menyedapkan hati dengan cahaya neon biru.",
+      "recorded_at_iso": "2026-11-28T20:57:30.211680+08:00"
+    },
+    {
+      "batch_no": 1,
+      "frame_no": 2,
+      "clip_id": "8128352",
+      "timestamp_sec": 2.22,
+      "compressed_kb": 22.58,
+      "detected_objects": [
+        "gaming setup",
+        "monitors",
+        "keyboard",
+        "mouse",
+        "people"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "visual_category": "cat_multiplayer",
+      "has_human_face": true,
+      "retro_nostalgia_angle": "Gamer-gemer di dalam bilik yang dipenuhi dengan lampu neon dan komputer.",
+      "recorded_at_iso": "2026-11-28T20:57:30.329030+08:00"
+    },
+    {
+      "batch_no": 1,
+      "frame_no": 3,
+      "clip_id": "8128352",
+      "timestamp_sec": 3.26,
+      "compressed_kb": 22.71,
+      "detected_objects": [
+        "gaming setup",
+        "monitors",
+        "keyboard",
+        "mouse",
+        "people"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "visual_category": "cat_multiplayer",
+      "has_human_face": true,
+      "retro_nostalgia_angle": "Gamer-gemer di dalam bilik yang dipenuhi dengan lampu neon dan komputer.",
+      "recorded_at_iso": "2026-11-28T20:57:30.495880+08:00"
+    },
+    {
+      "batch_no": 1,
+      "frame_no": 4,
+      "clip_id": "19162307",
+      "timestamp_sec": 1.55,
+      "compressed_kb": 7.47,
+      "detected_objects": [
+        "gaming chair",
+        "monitor",
+        "person"
+      ],
+      "ocr_text": "None",
+      "console_platform": "General Gaming",
+      "visual_category": "cat_console_setup",
+      "has_human_face": true,
+      "retro_nostalgia_angle": "Gamer-gemer di dalam bilik yang dipenuhi dengan lampu neon dan komputer.",
+      "recorded_at_iso": "2026-11-28T20:57:30.604113+08:00"
+    }
+  ]
+}
