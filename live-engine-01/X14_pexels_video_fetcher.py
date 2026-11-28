@@ -3,20 +3,20 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - PENARIK & PENAPIS VIDEO PEXELS 9:16 (X14)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X14_pexels_video_fetcher.py
 #
-# FUNGSI UTAMA (EDISI NAIK TARAF):
+# FUNGSI UTAMA (EDISI NAIK TARAF + PEMBERSIH STREAM FFMPEG ANTI-TMCD):
 # 1. Penjana Kata Kunci AI Pintar (X06 Qwen3.5-4B): Menjana calon kata kunci B-Roll
 #    pendek (2-3 perkataan Inggeris) yang fokus pada objek, pencahayaan retro,
 #    suasana tenang, atau pandangan belakang/sisi tanpa wajah hadapan.
 # 2. Guardrail Kata Kunci Berlapis (X04 Redis + X05 Upstash Vector):
 #    - Memori 15 kata kunci terakhir + kunci tepat 14 hari di Redis (`ps2n_reels`).
-#    - Penapis semantik Vector (skor >= 0.84 dalam 7 hari disekat) supaya
-#      tema carian Pexels sentiasa segar dan tidak berulang rapat.
+#    - Penapis semantik Vector (skor >= 0.84 dalam 7 hari disekat).
 # 3. Penapis Ketat Bebas Wajah & Orang Ramai: Menolak potret, selfie, dan
 #    kumpulan ramai, tetapi membenarkan objek tulen & pandangan belakang/sisi.
 # 4. Penjara Anti-Ulangan Video 6 Bulan (180 Hari): Menyemak ID video Pexels &
 #    cincangan SHA-256 terhadap Upstash Redis (`ps2n_reels`) serta SQLite.
-# 5. Pembersih Stream FFmpeg (`-map 0:v:0 -c:v copy -an`): Membuang trek data
-#    `tmcd` dan audio asal yang sering menyebabkan MoviePy gagal membaca MP4.
+# 5. Pembersih Stream FFmpeg (`-dn -sn -map_metadata -1 -write_tmcd 0`) +
+#    Pengesahan Bacaan MoviePy (`_verify_moviepy_readable`) supaya tiada klip
+#    `Stream group` / `tmcd` melepasi ke X16.
 # ==============================================================================
 
 import hashlib
@@ -284,7 +284,6 @@ def sanitize_pexels_keyword(raw_kw: str, max_words: int = 3) -> str:
     if not words:
         return ""
 
-    # Tolak jika mengandungi kata terlarang
     if set(words).intersection(STRICT_FACE_CROWD_AND_SENSITIVE_TOKENS):
         return ""
     if set(words).intersection(GENERIC_HUMAN_TOKENS) and not set(words).intersection(BACK_SIDE_HANDS_HINTS):
@@ -443,13 +442,52 @@ def _is_video_used_in_sqlite_180d(video_id: str, file_sha256: str = "") -> bool:
         conn.close()
 
 
+def _verify_moviepy_readable(video_path: Path) -> bool:
+    """
+    Mengesahkan fail MP4 boleh dibaca oleh MoviePy VideoFileClip tanpa ralat
+    `Stream group` atau `ffmpeg_parse_infos` sebelum diserahkan ke X16.
+    """
+    if not video_path.exists() or video_path.stat().st_size < 40_000:
+        return False
+
+    clip: Any = None
+    try:
+        try:
+            _mpy: Any = importlib.import_module("moviepy")
+            vfc_cls = getattr(_mpy, "VideoFileClip")
+        except Exception:
+            _mpy_ed: Any = importlib.import_module("moviepy.editor")
+            vfc_cls = getattr(_mpy_ed, "VideoFileClip")
+
+        clip = vfc_cls(str(video_path))
+        dur = float(clip.duration or 0.0)
+        if dur < 3.0:
+            return False
+        sample_t = min(0.25, max(0.05, dur * 0.1))
+        frame = clip.get_frame(sample_t)
+        return frame is not None
+    except Exception:
+        return False
+    finally:
+        if clip is not None:
+            try:
+                clip.close()
+            except Exception:
+                pass
+
+
 def sanitize_mp4_strip_tmcd_and_audio(raw_mp4: Path, clean_mp4: Path) -> bool:
     """
-    Menyalin trek video tulen sahaja (`-map 0:v:0 -c:v copy -an`) menggunakan FFmpeg
-    bagi membuang trek masa `tmcd` dan audio asal yang boleh merosakkan MoviePy.
+    Membersihkan strim video MP4 supaya 100% serasi dengan MoviePy:
+    1. Cuba salinan pantas (`-map 0:v:0 -dn -sn -map_metadata -1 -write_tmcd 0 -c:v copy -an`).
+    2. Sahkan dengan `_verify_moviepy_readable()`.
+    3. Jika container MP4 asal masih mempunyai `Stream group #0:0` yang ditolak MoviePy,
+       lakukan re-encode pantas (`libx264 -preset ultrafast -pix_fmt yuv420p`) dan sahkan semula.
     """
     ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-    cmd = [
+
+    # Langkah 1: Stream copy pantas tanpa trek data/timecode/audio
+    cmd_copy = [
         ffmpeg_bin,
         "-y",
         "-loglevel",
@@ -458,16 +496,64 @@ def sanitize_mp4_strip_tmcd_and_audio(raw_mp4: Path, clean_mp4: Path) -> bool:
         str(raw_mp4),
         "-map",
         "0:v:0",
+        "-dn",
+        "-sn",
+        "-map_metadata",
+        "-1",
+        "-write_tmcd",
+        "0",
         "-c:v",
         "copy",
         "-an",
         str(clean_mp4),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        return proc.returncode == 0 and clean_mp4.exists() and clean_mp4.stat().st_size > 40_000
+        proc = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and _verify_moviepy_readable(clean_mp4):
+            return True
     except Exception:
-        return False
+        pass
+
+    clean_mp4.unlink(missing_ok=True)
+
+    # Langkah 2: Fallback re-encode bersih untuk menghapuskan struktur container MP4 pelik
+    cmd_reencode = [
+        ffmpeg_bin,
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(raw_mp4),
+        "-map",
+        "0:v:0",
+        "-dn",
+        "-sn",
+        "-map_metadata",
+        "-1",
+        "-write_tmcd",
+        "0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "25",
+        "-an",
+        str(clean_mp4),
+    ]
+    try:
+        proc2 = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=60)
+        if proc2.returncode == 0 and _verify_moviepy_readable(clean_mp4):
+            return True
+    except Exception:
+        pass
+
+    clean_mp4.unlink(missing_ok=True)
+    return False
 
 
 def choose_balanced_category_and_query(
@@ -614,7 +700,7 @@ def _query_and_download_pexels_batch(
             )
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    top_pool = candidates[: max(desired_count * 3, 12)]
+    top_pool = candidates[: max(desired_count * 4, 15)]
     random.shuffle(top_pool)
 
     downloaded: List[Dict[str, Any]] = []
@@ -684,7 +770,7 @@ def fetch_and_prepare_pexels_clips(
     """
     Menarik calon video menegak 9:16 (1 request utama Pexels API dengan kata kunci AI),
     menapis menggunakan Redis & SQLite (180 hari / 6 bulan), dan memuat turun
-    3-5 klip terbaik. Jika hasil < 3 klip, membuat 1 cubaan sandaran kata kunci benih.
+    3-5 klip terbaik yang telah disahkan boleh dibaca oleh MoviePy.
     """
     api_key = (
         getattr(cfg, "PS2N_PEXELS_API_KEY", "")
@@ -719,7 +805,6 @@ def fetch_and_prepare_pexels_clips(
     total_skip_face = st1["skipped_face_filter"]
     total_skip_180d = st1["skipped_180d_dedup"]
 
-    # Jika kata kunci AI terlalu khusus (< 3 klip), tambah dari kata kunci benih kategori yang sama
     if len(prepared_clips) < 3 and category_name in PEXELS_REELS_CATEGORIES:
         backup_seeds = [q for q in PEXELS_REELS_CATEGORIES[category_name]["queries"] if q != query_str]
         if backup_seeds:

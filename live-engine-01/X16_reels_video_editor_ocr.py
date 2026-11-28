@@ -3,9 +3,9 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - ENJIN SNAPSHOT OCR & EDITOR VIDEO REELS (X16)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X16_reels_video_editor_ocr.py
 #
-# FUNGSI UTAMA (EDISI NAIK TARAF + TUNING KELAJUAN 384PX):
+# FUNGSI UTAMA (EDISI NAIK TARAF + TUNING KELAJUAN 384PX + FAIL-SAFE CLIP):
 # 1. Mengekstrak tepat 3 tangkapan skrin (snapshot) bagi setiap video Pexels
-#    (3 video = 9 gambar; 4 video = 12 gambar; 5 video = 15 gambar).
+#    dengan perlindungan ralat per klip (klip rosak dilangkau secara selamat).
 # 2. Penapis Wajah & Orang Ramai 2-Lapisan:
 #    - Lapisan 1: Imbasan pantas OpenCV Haar Cascade (jika tersedia) sebelum VLM.
 #    - Lapisan 2: Analisis VLM X07 pada resolusi pantas `384px` (`<= 20 KB`) dalam
@@ -244,15 +244,18 @@ def extract_and_analyze_clips_ocr(
     ledger = ReelsOcrBatchLedger(json_path=json_out, db_path=db_out)
 
     snapshot_tasks: List[Dict[str, Any]] = []
+    readable_clips: List[Dict[str, Any]] = []
     face_hits_by_clip: Dict[str, int] = {}
     global_frame_no = 0
     sample_ratios = (0.18, 0.50, 0.82)
 
     for clip_idx, c_obj in enumerate(clips, 1):
         cid = str(c_obj["id"])
-        v_clip = VideoFileClip(str(c_obj["local_path"]))
-        dur = float(v_clip.duration or 1.0)
+        v_clip: Any = None
         try:
+            v_clip = VideoFileClip(str(c_obj["local_path"]))
+            dur = float(v_clip.duration or 1.0)
+            extracted_count = 0
             for snap_i, ratio in enumerate(sample_ratios[:SNAPSHOTS_PER_CLIP], 1):
                 t_sec = round(min(max(0.25, dur * ratio), max(0.35, dur - 0.25)), 2)
                 frame_arr: Any = v_clip.get_frame(t_sec)
@@ -260,6 +263,7 @@ def extract_and_analyze_clips_ocr(
                     continue
 
                 global_frame_no += 1
+                extracted_count += 1
                 snap_file = work_dir / f"snap_{global_frame_no:02d}_c{clip_idx}_id{cid}.jpg"
                 im = Image.fromarray(frame_arr).convert("RGB")
                 im.save(snap_file, format="JPEG", quality=86)
@@ -279,11 +283,24 @@ def extract_and_analyze_clips_ocr(
                         "cv_face_hit": cv_face_hit,
                     }
                 )
+            if extracted_count > 0:
+                readable_clips.append(c_obj)
+        except Exception as exc:
+            console.print(
+                f"  [yellow]⚠️ Amaran Snapshot Klip #{cid}: gagal membaca video ({exc}), melangkau klip ini...[/yellow]"
+            )
         finally:
-            v_clip.close()
+            if v_clip is not None:
+                try:
+                    v_clip.close()
+                except Exception:
+                    pass
+
+    if not readable_clips:
+        raise RuntimeError("Tiada satu pun klip video berjaya diekstrak snapshot oleh MoviePy.")
 
     # Langkau VLM untuk klip yang sudah dikesan berwajah hadapan oleh Lapisan 1 (jika >= 2 klip bersih masih ada)
-    pre_clean_clip_ids = {str(c["id"]) for c in clips if face_hits_by_clip.get(str(c["id"]), 0) == 0}
+    pre_clean_clip_ids = {str(c["id"]) for c in readable_clips if face_hits_by_clip.get(str(c["id"]), 0) == 0}
     if len(pre_clean_clip_ids) >= 2:
         vlm_queue = [t for t in snapshot_tasks if t["clip_id"] in pre_clean_clip_ids]
     else:
@@ -361,10 +378,10 @@ def extract_and_analyze_clips_ocr(
         vision_analyzer.unload()
 
     # Tapis keluar klip yang mempunyai >= 1 bingkai wajah hadapan / crowd
-    clean_clips = list(clips)
+    clean_clips = list(readable_clips)
     flagged_face_clips = {cid for cid, cnt in face_hits_by_clip.items() if cnt >= FACE_FLAG_MIN_HITS}
     if flagged_face_clips:
-        remaining = [c for c in clips if str(c["id"]) not in flagged_face_clips]
+        remaining = [c for c in readable_clips if str(c["id"]) not in flagged_face_clips]
         if len(remaining) >= 2:
             clean_clips = remaining
             analyzed_frames = [f for f in analyzed_frames if f["clip_id"] not in flagged_face_clips]
@@ -517,20 +534,34 @@ def render_vertical_reels_video(
 
     try:
         for c_obj, seg_dur in zip(clips, cut_durations):
-            vc = VideoFileClip(str(c_obj["local_path"]))
-            source_handles.append(vc)
-            v_dur = float(vc.duration or 1.0)
-            safe_max_dur = max(0.5, v_dur - 0.12)
-            use_dur = min(safe_max_dur, seg_dur)
+            vc: Any = None
+            try:
+                vc = VideoFileClip(str(c_obj["local_path"]))
+                v_dur = float(vc.duration or 1.0)
+                safe_max_dur = max(0.5, v_dur - 0.12)
+                use_dur = min(safe_max_dur, seg_dur)
 
-            sub_fn = getattr(vc, "subclipped", None) or getattr(vc, "subclip")
-            sub = sub_fn(0, use_dur)
+                sub_fn = getattr(vc, "subclipped", None) or getattr(vc, "subclip")
+                sub = sub_fn(0, use_dur)
 
-            no_aud_fn = getattr(sub, "without_audio", None)
-            no_aud = no_aud_fn() if no_aud_fn else getattr(sub, "set_audio")(None)
+                no_aud_fn = getattr(sub, "without_audio", None)
+                no_aud = no_aud_fn() if no_aud_fn else getattr(sub, "set_audio")(None)
 
-            fitted = _fit_clip_9_16_cover(no_aud, REEL_WIDTH, REEL_HEIGHT)
-            fitted_segments.append(fitted)
+                fitted = _fit_clip_9_16_cover(no_aud, REEL_WIDTH, REEL_HEIGHT)
+                source_handles.append(vc)
+                fitted_segments.append(fitted)
+            except Exception as exc:
+                console.print(
+                    f"  [yellow]⚠️ Amaran Render Klip #{c_obj.get('id', '?')}: gagal diproses ({exc}), melangkau klip...[/yellow]"
+                )
+                if vc is not None:
+                    try:
+                        vc.close()
+                    except Exception:
+                        pass
+
+        if not fitted_segments:
+            raise RuntimeError("Tiada segmen video sah berjaya disediakan untuk dicantumkan.")
 
         stitched = concatenate_videoclips(fitted_segments, method="compose")
         final_dur = float(stitched.duration or 0.0)
