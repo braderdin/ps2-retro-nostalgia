@@ -227,3 +227,6 @@ text-archive/
 .env.local
 .env.gh.secret
 key-generate/
+temp/
+*.db-wal
+*.db-shm
