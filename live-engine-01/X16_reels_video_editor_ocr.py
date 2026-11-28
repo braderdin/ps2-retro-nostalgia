@@ -3,40 +3,41 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - ENJIN SNAPSHOT OCR & EDITOR VIDEO REELS (X16)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X16_reels_video_editor_ocr.py
 #
-# FUNGSI UTAMA:
+# FUNGSI UTAMA (EDISI NAIK TARAF):
 # 1. Mengekstrak tepat 3 tangkapan skrin (snapshot) bagi setiap video Pexels
 #    (3 video = 9 gambar; 4 video = 12 gambar; 5 video = 15 gambar).
-# 2. Memproses OCR secara berperingkat (MAKSIMUM 3-4 gambar per sesi) melalui
-#    X07_vision_ocr_analyzer.py dengan `max_tokens=1536` supaya JSON lengkap,
-#    serta menyimpan hasil demi hasil ke .json dan .db dalam folder /temp/.
-# 3. Tapisan Wajah Pintar: Menyingkirkan klip yang memaparkan wajah/selfie
-#    hadapan secara jelas, tetapi mengekalkan klip pandangan belakang atau sisi.
+# 2. Penapis Wajah & Orang Ramai 2-Lapisan:
+#    - Lapisan 1: Imbasan pantas OpenCV Haar Cascade (jika tersedia) sebelum VLM.
+#    - Lapisan 2: Analisis VLM X07 dalam kumpulan 2 gambar per sesi (`OCR_BATCH_SIZE=2`)
+#      supaya JSON tidak terpotong; menyingkirkan klip jika >= 1 bingkai mempunyai
+#      wajah hadapan atau kumpulan orang ramai, tetapi mengekalkan pandangan
+#      belakang, sisi, atau tangan sahaja.
+# 3. Menyimpan rekod analisis bingkai demi bingkai ke .json dan .db di /temp/.
 # 4. Membina ringkasan visual sinematik (Pembukaan -> Pertengahan -> Penutup)
-#    yang hidup dan tidak kaku untuk rujukan Persona AI (X17).
-# 5. Memotong & mencantumkan 3-5 klip menjadi video menegak 1080x1920 (9:16)
-#    berdurasi 30-50 saat selaras dengan titik ketukan rentak Librosa (X15).
+#    untuk rujukan Persona AI (X17).
+# 5. Memotong & mencantumkan klip bersih menjadi video menegak 1080x1920 (9:16)
+#    berdurasi 30-50 saat selaras dengan ketukan rentak Librosa (X15).
 # ==============================================================================
 
 import importlib
 import json
 import random
+import re
 import sqlite3
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PIL import Image
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 console = Console()
 
 # ------------------------------------------------------------------------------
-# IMPORT MODUL TERAS PROJEK (X01, X07) & PUSTAKA MOVIEPY
+# IMPORT MODUL TERAS PROJEK (X01, X07) & PUSTAKA MOVIEPY (BEBAS AMARAN PYLANCE)
 # ------------------------------------------------------------------------------
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
@@ -48,21 +49,44 @@ cfg: Any = importlib.import_module("X01_config")
 _vision_mod: Any = importlib.import_module("X07_vision_ocr_analyzer")
 vision_analyzer: Any = getattr(_vision_mod, "vision_analyzer")
 
+VideoFileClip: Any
+concatenate_videoclips: Any
 try:
-    from moviepy import VideoFileClip, concatenate_videoclips
-except ImportError:
-    from moviepy.editor import VideoFileClip, concatenate_videoclips  # type: ignore
+    _mpy: Any = importlib.import_module("moviepy")
+    VideoFileClip = getattr(_mpy, "VideoFileClip")
+    concatenate_videoclips = getattr(_mpy, "concatenate_videoclips")
+except Exception:
+    _mpy_ed: Any = importlib.import_module("moviepy.editor")
+    VideoFileClip = getattr(_mpy_ed, "VideoFileClip")
+    concatenate_videoclips = getattr(_mpy_ed, "concatenate_videoclips")
 
 MYT = timezone(timedelta(hours=8))
 TEMP_DIR: Path = Path(getattr(cfg, "TEMP_DIR", PROJECT_ROOT / "temp"))
 
 SNAPSHOTS_PER_CLIP: int = 3          # 3 snapshot per video (3 vid=9, 4 vid=12, 5 vid=15)
-OCR_BATCH_SIZE: int = 4              # Maksimum 3-4 gambar per panggilan OCR
-OCR_MAX_TOKENS: int = 1536           # Had token tinggi supaya JSON 4 gambar tidak terpotong
+OCR_BATCH_SIZE: int = 2              # 2 gambar per sesi VLM (elak JSON terpotong & 2x lebih stabil)
+OCR_MAX_TOKENS: int = 1400           # Ruang token mencukupi untuk 2 bingkai penuh
+FACE_FLAG_MIN_HITS: int = 1          # Singkirkan klip jika >= 1 bingkai ada wajah hadapan / crowd
 REEL_MIN_DURATION: float = 30.0
 REEL_MAX_DURATION: float = 50.0
 REEL_WIDTH: int = 1080
 REEL_HEIGHT: int = 1920
+
+CROWD_AND_FRONT_FACE_HINTS: Set[str] = {
+    "selfie",
+    "portrait",
+    "headshot",
+    "crowd",
+    "audience",
+    "group of people",
+    "many people",
+    "facing camera",
+    "looking at camera",
+    "wajah",
+    "muka",
+    "ramai orang",
+    "kumpulan orang",
+}
 
 
 # ==============================================================================
@@ -155,7 +179,49 @@ class ReelsOcrBatchLedger:
 
 
 # ==============================================================================
-# 2. PENGEKSTRAK 3 SNAPSHOT/VIDEO + OCR BERKELOMPOK (3-4 GAMBAR / SESI)
+# 2. LAPISAN 1: PENGESAN WAJAH PANTAS OPENCV (JIKA TERPASANG)
+# ==============================================================================
+def _detect_front_face_opencv(image_path: Path) -> bool:
+    """Mengesan wajah hadapan secara pantas (< 5ms) menggunakan Haar Cascade jika cv2 wujud."""
+    try:
+        cv2: Any = importlib.import_module("cv2")
+        cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
+        if not cascade_dir:
+            return False
+        face_cascade = cv2.CascadeClassifier(f"{cascade_dir}haarcascade_frontalface_default.xml")
+        img = cv2.imread(str(image_path))
+        if img is None:
+            return False
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.15,
+            minNeighbors=5,
+            minSize=(48, 48),
+        )
+        return len(faces) > 0
+    except Exception:
+        return False
+
+
+def _is_frame_flagged_face_or_crowd(v_res: Dict[str, Any]) -> bool:
+    """Menilai sama ada output VLM menunjukkan wajah hadapan atau kumpulan orang ramai."""
+    if bool(v_res.get("has_human_face", False)):
+        return True
+
+    objs_str = " ".join(str(x) for x in v_res.get("detected_objects", [])).lower()
+    desc_str = str(v_res.get("retro_nostalgia_angle", "")).lower()
+    combined = f"{objs_str} {desc_str}"
+
+    # Benarkan jika secara jelas dinyatakan pandangan belakang / sisi / tangan sahaja
+    if any(ok_w in combined for ok_w in ("from behind", "back view", "side view", "dari belakang", "dari sisi", "hands only")):
+        return False
+
+    return any(bad_term in combined for bad_term in CROWD_AND_FRONT_FACE_HINTS)
+
+
+# ==============================================================================
+# 3. PENGEKSTRAK 3 SNAPSHOT/VIDEO + OCR BERKELOMPOK (2 GAMBAR / SESI)
 # ==============================================================================
 def extract_and_analyze_clips_ocr(
     clips: List[Dict[str, Any]],
@@ -166,7 +232,8 @@ def extract_and_analyze_clips_ocr(
 ) -> Dict[str, Any]:
     """
     Mengekstrak 3 snapshot per video (9 hingga 15 gambar keseluruhan),
-    memampatkan di bawah 30 KB, dan menganalisis dalam kumpulan 3-4 gambar per sesi.
+    menapis wajah hadapan melalui 2 lapisan (OpenCV + VLM X07 batch 2 gambar),
+    dan menyimpan hasil setiap bingkai ke .json & .db dalam /temp/.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     json_out = json_ref_path or (TEMP_DIR / "x16_ocr_sessions.json")
@@ -174,10 +241,12 @@ def extract_and_analyze_clips_ocr(
     ledger = ReelsOcrBatchLedger(json_path=json_out, db_path=db_out)
 
     snapshot_tasks: List[Dict[str, Any]] = []
+    face_hits_by_clip: Dict[str, int] = {}
     global_frame_no = 0
     sample_ratios = (0.18, 0.50, 0.82)
 
     for clip_idx, c_obj in enumerate(clips, 1):
+        cid = str(c_obj["id"])
         v_clip = VideoFileClip(str(c_obj["local_path"]))
         dur = float(v_clip.duration or 1.0)
         try:
@@ -188,32 +257,43 @@ def extract_and_analyze_clips_ocr(
                     continue
 
                 global_frame_no += 1
-                snap_file = work_dir / f"snap_{global_frame_no:02d}_c{clip_idx}_id{c_obj['id']}.jpg"
+                snap_file = work_dir / f"snap_{global_frame_no:02d}_c{clip_idx}_id{cid}.jpg"
                 im = Image.fromarray(frame_arr).convert("RGB")
                 im.save(snap_file, format="JPEG", quality=86)
+
+                cv_face_hit = _detect_front_face_opencv(snap_file)
+                if cv_face_hit:
+                    face_hits_by_clip[cid] = face_hits_by_clip.get(cid, 0) + 1
 
                 snapshot_tasks.append(
                     {
                         "frame_no": global_frame_no,
                         "clip_order": clip_idx,
-                        "clip_id": str(c_obj["id"]),
+                        "clip_id": cid,
                         "snap_in_clip": snap_i,
                         "timestamp_sec": t_sec,
                         "snap_path": snap_file,
+                        "cv_face_hit": cv_face_hit,
                     }
                 )
         finally:
             v_clip.close()
 
+    # Langkau VLM untuk klip yang sudah dikesan berwajah hadapan oleh Lapisan 1 (jika >= 2 klip bersih masih ada)
+    pre_clean_clip_ids = {str(c["id"]) for c in clips if face_hits_by_clip.get(str(c["id"]), 0) == 0}
+    if len(pre_clean_clip_ids) >= 2:
+        vlm_queue = [t for t in snapshot_tasks if t["clip_id"] in pre_clean_clip_ids]
+    else:
+        vlm_queue = list(snapshot_tasks)
+
     total_snaps = len(snapshot_tasks)
-    total_batches = (total_snaps + OCR_BATCH_SIZE - 1) // OCR_BATCH_SIZE
+    total_batches = (len(vlm_queue) + OCR_BATCH_SIZE - 1) // OCR_BATCH_SIZE
     analyzed_frames: List[Dict[str, Any]] = []
-    face_hits_by_clip: Dict[str, int] = {}
 
     try:
         for b_idx in range(total_batches):
             batch_no = b_idx + 1
-            batch_slice = snapshot_tasks[b_idx * OCR_BATCH_SIZE : (b_idx + 1) * OCR_BATCH_SIZE]
+            batch_slice = vlm_queue[b_idx * OCR_BATCH_SIZE : (b_idx + 1) * OCR_BATCH_SIZE]
             batch_paths = [t["snap_path"] for t in batch_slice]
 
             console.print(
@@ -227,8 +307,9 @@ def extract_and_analyze_clips_ocr(
                 auto_unload=False,
                 max_tokens=OCR_MAX_TOKENS,
                 context_hint=(
-                    f"{topic_hint} | Describe lighting, colors, atmosphere, objects & visible text. "
-                    "Note: back/side views of gamers are allowed; mark has_human_face=true ONLY for clear front faces."
+                    f"{topic_hint} | Describe lighting, colors, mood, objects & visible text. "
+                    "STRICT RULE: Set has_human_face=true if ANY front/side human face, selfie, or crowd of people is visible. "
+                    "Set has_human_face=false ONLY for pure objects/scenery, hands-only, or pure back-of-head views."
                 ),
                 skip_failed=True,
             )
@@ -242,9 +323,9 @@ def extract_and_analyze_clips_ocr(
 
             for local_i, v_res in enumerate(v_items):
                 task_ref = batch_slice[local_i] if local_i < len(batch_slice) else batch_slice[-1]
-                has_face = bool(v_res.get("has_human_face", False))
                 cid = task_ref["clip_id"]
-                if has_face:
+                flagged_face = _is_frame_flagged_face_or_crowd(v_res)
+                if flagged_face:
                     face_hits_by_clip[cid] = face_hits_by_clip.get(cid, 0) + 1
 
                 frame_record = {
@@ -258,7 +339,7 @@ def extract_and_analyze_clips_ocr(
                     "ocr_text": str(v_res.get("ocr_text", "None")).strip(),
                     "console_platform": str(v_res.get("console_platform", "General Gaming")).strip(),
                     "is_ps2_relevant": bool(v_res.get("is_ps2_relevant", False)),
-                    "has_human_face": has_face,
+                    "has_human_face": flagged_face,
                     "visual_category": str(v_res.get("visual_category", "cat_reels_clip")).strip(),
                     "scene_description": str(v_res.get("retro_nostalgia_angle", "")).strip(),
                     "recorded_at_iso": datetime.now(tz=MYT).isoformat(),
@@ -273,17 +354,23 @@ def extract_and_analyze_clips_ocr(
     finally:
         vision_analyzer.unload()
 
-    # Tapis keluar klip yang mempunyai wajah hadapan ketara (>= 2 daripada 3 bingkai) jika baki klip mencukupi
+    # Tapis keluar klip yang mempunyai >= 1 bingkai wajah hadapan / crowd
     clean_clips = list(clips)
-    flagged_face_clips = {cid for cid, cnt in face_hits_by_clip.items() if cnt >= 2}
+    flagged_face_clips = {cid for cid, cnt in face_hits_by_clip.items() if cnt >= FACE_FLAG_MIN_HITS}
     if flagged_face_clips:
         remaining = [c for c in clips if str(c["id"]) not in flagged_face_clips]
-        if len(remaining) >= 3:
+        if len(remaining) >= 2:
             clean_clips = remaining
             analyzed_frames = [f for f in analyzed_frames if f["clip_id"] not in flagged_face_clips]
             console.print(
-                f"  [yellow]🛡️ Penapis Wajah: {len(flagged_face_clips)} klip berwajah hadapan disingkirkan; "
+                f"  [yellow]🛡️ Penapis Wajah Ketat: {len(flagged_face_clips)} klip berwajah/ramai orang disingkirkan; "
                 f"mengekalkan {len(clean_clips)} klip bersih.[/yellow]"
+            )
+        elif len(remaining) == 1:
+            clean_clips = remaining
+            analyzed_frames = [f for f in analyzed_frames if f["clip_id"] not in flagged_face_clips]
+            console.print(
+                "  [yellow]🛡️ Penapis Wajah Ketat: mengekalkan 1 klip paling bersih tanpa wajah hadapan.[/yellow]"
             )
 
     # Semak sama ada visual mengandungi elemen retro/konsol/gaming untuk kelayakan promo Shopee 30%
@@ -318,7 +405,7 @@ def build_cinematic_visual_brief(
 ) -> str:
     """
     Menyusun dapatan OCR menjadi penceritaan visual sinematik mengikut urutan babak
-    (Pembukaan -> Pertengahan -> Penutup) supaya Persona AI tidak menulis ayat kaku.
+    (Pembukaan -> Pertengahan -> Kemuncak -> Penutup) supaya Persona AI tidak menulis ayat kaku.
     """
     if not frames:
         return "Babak visual estetik penuh pencahayaan retro yang menggamit nostalgia."
@@ -359,7 +446,7 @@ def build_cinematic_visual_brief(
 
 
 # ==============================================================================
-# 3. ENJIN SUNTINGAN & CANTUMAN VIDEO MENEGAK 9:16 (30 - 50 SAAT)
+# 4. ENJIN SUNTINGAN & CANTUMAN VIDEO MENEGAK 9:16 (30 - 50 SAAT)
 # ==============================================================================
 def _fit_clip_9_16_cover(clip: Any, target_w: int = REEL_WIDTH, target_h: int = REEL_HEIGHT) -> Any:
     """Melaras dimensi video kepada 1080x1920 (cover-scale + center-crop) tanpa herotan."""
@@ -387,7 +474,7 @@ def render_vertical_reels_video(
     target_duration_sec: Optional[int] = None,
 ) -> Tuple[Path, float]:
     """
-    Memotong 3-5 klip mengikut ketukan rentak Librosa supaya jumlah durasi
+    Memotong klip bersih mengikut ketukan rentak Librosa supaya jumlah durasi
     berada dalam julat ketat 30 hingga 50 saat, menggabungkan muzik latar,
     dan menghasilkan fail MP4 menegak 1080x1920 (H.264 + AAC).
     """
@@ -427,7 +514,6 @@ def render_vertical_reels_video(
             vc = VideoFileClip(str(c_obj["local_path"]))
             source_handles.append(vc)
             v_dur = float(vc.duration or 1.0)
-            # Tinggalkan margin 0.12s di hujung klip bagi mengelak amaran frame terakhir
             safe_max_dur = max(0.5, v_dur - 0.12)
             use_dur = min(safe_max_dur, seg_dur)
 
@@ -508,7 +594,8 @@ if __name__ == "__main__":
         Panel.fit(
             "[bold cyan]X16 :: REELS SNAPSHOT OCR & VIDEO EDITOR MODULE READY[/bold cyan]\n"
             f"[dim]Tetapan: {SNAPSHOTS_PER_CLIP} snapshot/video | Batch OCR: {OCR_BATCH_SIZE} gambar/sesi "
-            f"(max_tokens={OCR_MAX_TOKENS}) | Durasi Reels: {int(REEL_MIN_DURATION)}-{int(REEL_MAX_DURATION)}s[/dim]",
+            f"(max_tokens={OCR_MAX_TOKENS}) | Penapis Wajah: >= {FACE_FLAG_MIN_HITS} bingkai | "
+            f"Durasi Reels: {int(REEL_MIN_DURATION)}-{int(REEL_MAX_DURATION)}s[/dim]",
             border_style="cyan",
         )
     )
