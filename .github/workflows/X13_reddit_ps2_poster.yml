@@ -20,10 +20,13 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   publish-reddit-ps2-vision-post:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     steps:
       - name: 1. Nyahsekat DNS Runner (Guna Cloudflare 1.1.1.1 & Google 8.8.8.8)
@@ -128,7 +131,55 @@ jobs:
               --error-step "fb_reddit_post (outcome=${{ steps.fb_reddit_post.outcome }}, job=${{ job.status }})"
           fi
 
-      - name: 11. Muat Naik Laporan JSON Hantaran X13
+      - name: 11. Auto-Commit & Sync Pangkalan Data SQLite (.db) ke GitHub (Auto-Rebase Safe)
+        if: always() && inputs.dry_run != true
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Gabungkan jurnal WAL SQLite ke fail utama sebelum commit
+          python3 -c '
+          import glob, sqlite3
+          for db_file in glob.glob("data/*.db"):
+              try:
+                  conn = sqlite3.connect(db_file)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                  conn.close()
+              except Exception:
+                  pass
+          '
+
+          # Pantau semua fail binari SQLite (termasuk fail pecahan partNNN.db jika auto-split berlaku)
+          git add -f data/*.db 2>/dev/null || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "cron(x13): sync reddit sqlite history & shopee counters [skip ci]"
+
+            # Rebase automatik sekiranya remote mempunyai commit baharu semasa job berjalan
+            for i in 1 2 3; do
+              git fetch origin main
+              if git rebase origin/main; then
+                if git push origin main; then
+                  echo "✅ Berjaya sync pangkalan data .db (X13) ke GitHub!"
+                  exit 0
+                fi
+              else
+                git rebase --abort || true
+                git pull origin main --no-rebase -X ours -m "merge(x13): resolve sqlite history sync [skip ci]"
+                if git push origin main; then
+                  echo "✅ Berjaya merge & push pangkalan data .db (X13) ke GitHub!"
+                  exit 0
+                fi
+              fi
+              echo "⚠️ Percubaan $i gagal kerana remote berubah, mencuba semula..."
+              sleep 2
+            done
+            exit 1
+          else
+            echo "ℹ️ Tiada perubahan rekod pangkalan data dikesan."
+          fi
+
+      - name: 12. Muat Naik Laporan JSON Hantaran X13
         if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -493,7 +493,7 @@ class VisionOCRAnalyzer:
         messages = [
             {
                 "role": "system",
-                "content": "You are a concise multimodal vision and OCR engine. Output strict valid JSON only without repeating words.",
+                "content": "You are a concise multimodal vision and OCR engine. Output strict valid JSON only without repeating words.\n/no_think",
             },
             {"role": "user", "content": user_content},
         ]
@@ -580,6 +580,12 @@ class VisionOCRAnalyzer:
             user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt_text}]
             for item in compressed_items:
                 user_content.append({"type": "image_url", "image_url": {"url": item["data_url"]}})
+            user_content.append(
+                {
+                    "type": "text",
+                    "text": "Output the valid JSON object immediately. Do not think.\n/no_think",
+                }
+            )
 
             total_inf_sec = 0.0
             last_cleaned = ""
@@ -598,7 +604,7 @@ class VisionOCRAnalyzer:
                 total_inf_sec += time.perf_counter() - t_inf
 
                 raw_out = str(res["choices"][0]["message"]["content"] or "")
-                cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw_out, flags=re.DOTALL)
+                cleaned = re.sub(r"<think>[\s\S]*?(?:</think>|$)", "", raw_out, flags=re.DOTALL)
                 cleaned = re.sub(r"```json\s*|```\s*", "", cleaned).strip()
                 last_cleaned = cleaned
                 last_usage = res.get("usage", {}) or {}

@@ -3,24 +3,22 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - REDDIT PS2 + VISION OCR + FB AUTO-POSTER (X13)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X13_reddit_ps2_story_poster.py
 #
-# FUNGSI UTAMA:
-# 1. Mengumpul idea & perbincangan hangat daripada komuniti Reddit PS2
-#    (r/ps2, r/ps2homebrew, r/PlayStation2) melalui enjin hibrid 4-lapisan
-#    (Arctic Shift Mirror -> PullPush Mirror -> Direct JSON -> Atom RSS XML)
-#    beserta 5 komen teratas untuk konteks perbincangan sebenar.
-# 2. Memuat turun 1 hingga 4 gambar asli Reddit (3-lapisan anti-403) atau
-#    sandaran Unsplash, memampatkan < 30 KB, dan menganalisis objek + teks OCR
-#    melalui X07_vision_ocr_analyzer.py sebelum AI mula menulis.
-# 3. Persona AI (Lelaki 35 Tahun Terpelajar: 'admin' / 'min') dengan 4 Mood &
-#    Topik Bergilir (TECH_INSIDER, STORYTELLER_NOSTALGIA, DEBATE_HOST,
-#    COLLECTOR_SHOWCASE) mengikut waktu Malaysia (MYT).
-# 4. Penapisan Semantik & Memori Berawalan 'reddit' pada Redis (X04) & Vector (X05):
-#    - Namespace 'ps2n_reddit' pada semua kunci Redis & ID Vector
-#    - Jarak 60 hari untuk ayat >= 95% sama & 5 hari untuk ayat 75%-80% sama
-#    - Mengunci ID pos Reddit selama 180 hari supaya tidak berulang
-#    - Arkib gambar & log ke Backblaze B2 via Cloudflare Worker Proxy (X03)
-# 5. Penerbitan ke Facebook Page (1 foto atau album 2-4 foto, 500-650 aksara,
-#    sifar emoji) + komen pertama dengan 10 link Shopee bergilir.
+# FUNGSI UTAMA (EDISI NAIK TARAF):
+# 1. Penarik Idea & Gambar Komuniti Reddit PS2 (r/ps2, r/ps2homebrew,
+#    r/PlayStation2) melalui 4 lapisan enjin (Arctic Shift -> PullPush ->
+#    Direct JSON -> Atom RSS XML) + 5 komen teratas komuniti.
+# 2. Penapis Anti-Ulangan Ketat 60 Hari (Gambar SHA-256, Tajuk/ID Reddit, & Ayat):
+#    - Tiada gambar sama (SHA-256) atau ayat 100% sama dalam tempoh 60 hari.
+#    - Selepas 60 hari tamat, topik/gambar dibenarkan semula secara automatik.
+# 3. Otak Memori SQLite3 Pintar (< 30 MB Auto-Split & Auto-Prune):
+#    - Membaca katalog game (.db), produk Shopee (.db), sejarah X11 & X13 (.db).
+#    - Memantau saiz fail .db; jika mencecah 26 MB (bawah had 30 MB GitHub),
+#      rekod lama dipecahkan automatik ke fail *_partNNN.db dan di-VACUUM.
+# 4. Persona AI Santai (500 - 750 Aksara | Guardrail Ringan | 3 Persona 2-Hari):
+#    - Menggabungkan hasil bacaan Vision/OCR (< 30 KB, X07) + diskusi Reddit
+#      dalam Bahasa Melayu Malaysia santai tanpa emoji pada kapsyen utama.
+# 5. Komen Pertama Automatik (20 Pusingan Variasi Hidup) + 10 Link Shopee
+#    bergilir + arkib media/log ke Backblaze B2 (X03).
 # ==============================================================================
 
 import argparse
@@ -72,11 +70,11 @@ _vision_mod: Any = importlib.import_module("X07_vision_ocr_analyzer")
 
 ledger_db: Any = getattr(_ledger_mod, "ledger_db")
 b2_proxy: Any = getattr(_b2_mod, "b2_proxy")
+compute_file_sha256: Any = getattr(_b2_mod, "compute_file_sha256")
 PS2RedisShardedManager: Any = getattr(_redis_mod, "PS2RedisShardedManager")
 PS2VectorShardedManager: Any = getattr(_vector_mod, "PS2VectorShardedManager")
 llm_engine: Any = getattr(_llm_mod, "llm_engine")
 clean_and_scrub_bm_story: Any = getattr(_llm_mod, "clean_and_scrub_bm_story")
-validate_story_quality: Any = getattr(_llm_mod, "validate_story_quality")
 vision_analyzer: Any = getattr(_vision_mod, "vision_analyzer")
 
 # Instans Redis & Vector khusus berawalan 'reddit' (ps2n_reddit:...)
@@ -85,26 +83,34 @@ reddit_vector = PS2VectorShardedManager(namespace="ps2n_reddit")
 
 
 # ==============================================================================
-# [BAHAGIAN TUNING MANUAL X13 - REDDIT + VISION OCR + PERSONA AI]
+# [BAHAGIAN TUNING MANUAL X13 - SANTAI, 500-750 AKSARA & KAWALAN DB < 30MB]
 # ==============================================================================
 STORY_MIN_CHARS: int = int(os.getenv("PS2N_X13_MIN_CHARS", "500"))
-STORY_MAX_CHARS: int = int(os.getenv("PS2N_X13_MAX_CHARS", "650"))
-STORY_SOFT_TRIM: int = int(os.getenv("PS2N_X13_TRIM_CHARS", "645"))
-STORY_MAX_TOKENS: int = int(os.getenv("PS2N_X13_MAX_TOKENS", "390"))
-STORY_TEMPERATURE: float = float(os.getenv("PS2N_X13_TEMP", "0.73"))
+STORY_MAX_CHARS: int = int(os.getenv("PS2N_X13_MAX_CHARS", "750"))
+STORY_SOFT_TRIM: int = int(os.getenv("PS2N_X13_TRIM_CHARS", "740"))
+STORY_MAX_TOKENS: int = int(os.getenv("PS2N_X13_MAX_TOKENS", "480"))
+STORY_TEMPERATURE: float = float(os.getenv("PS2N_X13_TEMP", "0.68"))
 
-# Ambang Jarak Masa Penapis Semantik Vector (60 Hari Exact / 5 Hari Similar)
+# Tempoh Sekatan Ulangan (60 Hari untuk 100% Sama | 5 Hari untuk Hampir Sama)
 EXACT_MATCH_THRESHOLD: float = 0.95
 EXACT_COOLDOWN_DAYS: int = 60
-SIMILAR_MATCH_THRESHOLD: float = 0.75
+SIMILAR_MATCH_THRESHOLD: float = 0.78
 SIMILAR_COOLDOWN_DAYS: int = 5
-REDDIT_POST_SEEN_TTL_DAYS: int = 180
+IMAGE_SHA256_COOLDOWN_DAYS: int = 60
+REDDIT_POST_COOLDOWN_DAYS: int = 60
+
+# Had Saiz Fail SQLite3 untuk GitHub (< 30 MB per fail; mula split pada 26 MB)
+SQLITE_MAX_SAFE_BYTES: int = int(os.getenv("PS2N_SQLITE_MAX_BYTES", str(26 * 1024 * 1024)))
+SQLITE_MAX_ARCHIVE_SHARDS: int = 6
+SQLITE_PRUNE_OLDER_THAN_DAYS: int = 150
 
 # Laluan Data & Temp
 DATA_DIR: Path = Path(getattr(cfg, "DATA_DIR", PROJECT_ROOT / "data"))
 TEMP_DIR: Path = Path(getattr(cfg, "TEMP_DIR", PROJECT_ROOT / "temp"))
 WORK_MEDIA_DIR: Path = TEMP_DIR / "x13_reddit_media"
 SHOPEE_DB_PATH: Path = DATA_DIR / "ps2_shopee_products.db"
+GAMES_DB_PATH: Path = DATA_DIR / "ps2_games_catalog.db"
+TEXT_HISTORY_DB_PATH: Path = DATA_DIR / "ps2_text_posts_history.db"
 REDDIT_HISTORY_DB_PATH: Path = DATA_DIR / "ps2_reddit_posts_history.db"
 LAST_OUTPUT_JSON: Path = TEMP_DIR / "x13_last_reddit_post.json"
 # ==============================================================================
@@ -123,7 +129,7 @@ LOW_STORY_TITLE_PATTERNS = (
 )
 
 REDDIT_APP_HEADERS: Dict[str, str] = {
-    "User-Agent": "linux:ps2-retro-nostalgia-curator:v1.0.0 (by /u/ps2retronostalgia)",
+    "User-Agent": "linux:ps2-retro-nostalgia-curator:v1.1.0 (by /u/ps2retronostalgia)",
     "Accept": "application/json, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
@@ -144,16 +150,55 @@ UNSPLASH_PS2_FALLBACK_QUERIES: List[str] = [
     "usb flash drive hard drive desk",
 ]
 
-# 4 Gaya Mood Persona AI yang Bergilir Secara Pintar
+# 3 Kitaran Persona Utama (Bergilir Setiap 2 Hari Secara Automatik)
+THREE_PERSONA_CYCLES: List[Dict[str, str]] = [
+    {
+        "persona_id": "P_KAKI_LEPAK",
+        "title": "Abang Kedai Game (Santai & Mengimbau)",
+        "style_note": (
+            "Bercerita macam member lama kat kedai game era 2000-an. Santai, ramah, ada unsur nostalgia "
+            "zaman sekolah, berebut kontroler dengan kawan, dan seronok kongsi cerita tanpa bahasa skema."
+        ),
+        "one_shot_anchor": (
+            "Contoh nada santai: Masa zaman sekolah dulu, kalau dapat lepak depan TV lepas habis kelas memang tak ingat "
+            "benda lain dah. Lagi-lagi bila jumpa game legend yang buat satu bilik riuh rendah."
+        ),
+    },
+    {
+        "persona_id": "P_DOKTOR_KONSOL",
+        "title": "Pakar Perkakasan & Modding PS2",
+        "style_note": (
+            "Gaya abang 35 tahun yang mahir selok-belok konsol PS2 Fat dan Slim, sistem OPL, modchip Matrix, "
+            "serta kad memori FMCB/OpenTuna. Terangkan fakta teknikal dengan ayat mudah orang biasa faham."
+        ),
+        "one_shot_anchor": (
+            "Contoh nada santai: Ramai yang ingat bila laser PS2 dah mula lemah tak boleh baca CD, konsol lama tu terus "
+            "kena simpan dalam stor. Padahal kalau guna sistem OPL terus dari pendrive, kerja lagi cepat dan selamat."
+        ),
+    },
+    {
+        "persona_id": "P_KURATOR_RETRO",
+        "title": "Kurator Koleksi & Sejarah Klasik",
+        "style_note": (
+            "Menghargai nilai sentimental kover game asal, ketahanan perkakasan Sony era 2000-an, dan kisah "
+            "di sebalik tabir pembangunan game klasik dengan penceritaan yang hidup dan menyentuh emosi."
+        ),
+        "one_shot_anchor": (
+            "Contoh nada santai: Tengok balik kover kotak biru PlayStation 2 zaman dulu pun dah cukup buat ingatan "
+            "melayang ke tahun 2004. Setiap judul masa tu ada identiti tersendiri yang susah nak jumpa sekarang."
+        ),
+    },
+]
+
+# 4 Gaya Mood Mengikut Waktu & Jenis Topik
 REDDIT_PERSONA_MOODS: List[Dict[str, str]] = [
     {
         "mood_id": "TECH_INSIDER",
         "label": "Kupasan Perkakasan & Modding PS2",
         "preferred_slots": "Pagi,Tengah Hari",
         "instruction": (
-            "Bawa gaya abang 35 tahun yang celik teknologi dan perkakasan PS2. Terangkan dengan bahasa mudah faham "
-            "bagaimana komuniti PS2 hari ini memanfaatkan OPL, sambungan rangkaian, kad memori mod, atau cip Matrix "
-            "untuk menghidupkan konsol lama tanpa perlu bergantung pada cakera optik yang mudah calar."
+            "Fokus pada bagaimana komuniti PS2 hari ini memanfaatkan OPL, sambungan rangkaian, kad memori mod, "
+            "atau cip Matrix untuk menghidupkan semula konsol lama tanpa perlu bergantung pada cakera optik."
         ),
     },
     {
@@ -161,9 +206,8 @@ REDDIT_PERSONA_MOODS: List[Dict[str, str]] = [
         "label": "Penceritaan Nostalgia Era 2000-an",
         "preferred_slots": "Petang,Malam",
         "instruction": (
-            "Bawa gaya penceritaan santai dan menyentuh memori zaman sekolah atau remaja tahun 2000-an di Malaysia. "
-            "Kaitkan suasana dalam gambar dan diskusi komuniti dengan pengalaman sebenar pemain tempatan berebut "
-            "kontroler, menjaga save data 8MB, atau melayan game klasik sampai lewat malam."
+            "Kaitkan suasana dalam gambar dan perbualan komuniti dengan kenangan sebenar pemain PS2 di Malaysia "
+            "seperti menjaga save data 8MB atau melayan game klasik bersama kawan dan adik-beradik."
         ),
     },
     {
@@ -171,9 +215,8 @@ REDDIT_PERSONA_MOODS: List[Dict[str, str]] = [
         "label": "Pengacara Topik & Perdebatan Komuniti",
         "preferred_slots": "Tengah Hari,Malam",
         "instruction": (
-            "Angkat persoalan menarik atau perbandingan game yang sedang hangat dibincangkan oleh peminat PS2. "
-            "Bandingkan kelebihan dua judul atau gaya permainan dengan hujah bernas macam rakan sembang kedai kopi, "
-            "supaya pembaca teruja untuk berkongsi pilihan mereka sendiri di ruangan komen."
+            "Angkat persoalan atau perbandingan game yang sedang hangat dibincangkan peminat PS2 dengan gaya "
+            "sembang santai supaya pembaca teruja untuk berkongsi pilihan mereka di ruangan komen."
         ),
     },
     {
@@ -181,15 +224,14 @@ REDDIT_PERSONA_MOODS: List[Dict[str, str]] = [
         "label": "Ulasan Koleksi & Setup Retro Klasik",
         "preferred_slots": "Pagi,Petang",
         "instruction": (
-            "Ulas butiran menarik yang kelihatan pada kover game, konsol, kabel, atau susun atur retro dalam gambar. "
-            "Hargai nilai sejarah dan ketahanan konsol PlayStation 2 yang masih utuh selepas lebih dua dekad, "
+            "Ulas butiran menarik yang kelihatan pada kover game, konsol, kabel, atau susun atur retro dalam gambar "
             "sambil menyelitkan kemudahan memainkan semula koleksi tersebut menggunakan storan USB moden."
         ),
     },
 ]
 
-# 16 Variasi Komen Pertama Shopee (dengan emoji & ajakan klik link)
-REDDIT_COMMENT_VARIATIONS_16: List[str] = [
+# 20 Pusingan Variasi Komen Pertama Shopee (Hidup, Pelbagai Nada & Sedia Klik)
+REDDIT_COMMENT_VARIATIONS_20: List[str] = [
     "🎮 Rindu nak layan semula koleksi klasik PS2 kat rumah tanpa risau CD calar atau lens rosak? Tekan link Shopee di bawah untuk pilih game kegemaran korang:\n👉 {url}",
     "🕹️ Ramai geng 30-an dah hidupkan balik konsol PS2 lama kat rumah guna cara moden ni! Klik link di bawah untuk semak pakej yang ngam dengan PS2 korang:\n👉 {url}",
     "💾 Konsol PS2 kat rumah lens dah lemah tak baca disk? Jangan simpan dalam stor dulu, tekan link Shopee di bawah untuk penyelesaian Plug & Play:\n👉 {url}",
@@ -206,12 +248,54 @@ REDDIT_COMMENT_VARIATIONS_16: List[str] = [
     "📲 Lepas buat pesanan boleh terus hantar senarai game pilihan korang di chat! Tekan link Shopee di bawah untuk lihat butiran:\n👉 {url}",
     "🌟 Hidupkan semula bunyi skrin boot ikonik PS2 kat TV ruang tamu malam ni! Klik link di bawah untuk tengok kelengkapan siap sedia:\n👉 {url}",
     "🏁 Jangan biarkan konsol legenda PS2 tersadai berhabuk! Tekan link kat bawah ni untuk tengok pakej plug and play pilihan ramai:\n👉 {url}",
+    "📺 Kalau ada TV lama atau monitor kat rumah, terus sambung PS2 guna set siap game ni memang puas hati. Tengok pilihan penuh kat link bawah:\n👉 {url}",
+    "🧩 Susah nak cari CD game lama yang elok sekarang? Simpan je dalam pendrive atau hardisk siap susun ikut tajuk. Klik sini untuk semak:\n👉 {url}",
+    "👾 Nak bagi anak-anak rasa pengalaman game zaman kita membesar dulu? Set PS2 plug and play ni memang senang nak guna, tekan link bawah:\n👉 {url}",
+    "🏆 Korang team bola sepak klasik, game lumba kereta, atau game aksi pengembaraan? Semua tajuk popular boleh pilih sendiri kat pautan ni:\n👉 {url}",
 ]
 
 
 # ==============================================================================
-# 1. KONTEKS MASA MALAYSIA (MYT) & PENGURUS SEJARAH REDDIT
+# 1. KONTEKS MASA MALAYSIA (MYT) & KITARAN PERSONA 2-HARI
 # ==============================================================================
+def get_malaysia_special_occasion(now: datetime) -> str:
+    """Mengesan hari besar, perayaan, cuti sekolah, & tarikh bersejarah PS2 di Malaysia."""
+    m, d, wd = now.month, now.day, now.weekday()
+    notes: List[str] = []
+
+    fixed_events = {
+        (1, 1): "Sambutan Tahun Baru — permulaan tahun baharu dengan semangat retro.",
+        (2, 1): "Hari Wilayah Persekutuan — cuti santai sesuai mengemas koleksi konsol.",
+        (3, 4): "HARI BERSEJARAH PS2 (4 Mac 2000) — ulang tahun pelancaran rasmi PlayStation 2 di dunia!",
+        (5, 1): "Hari Pekerja — masa terbaik berehat di rumah sambil melayan game klasik.",
+        (8, 31): "Hari Kebangsaan (Merdeka) — semangat patriotik & kenangan membesar di Malaysia.",
+        (9, 16): "Hari Malaysia — meraikan kebersamaan peminat retro dari Semenanjung hingga Sabah & Sarawak.",
+        (12, 25): "Hari Krismas & musim percutian hujung tahun di Malaysia.",
+    }
+    if (m, d) in fixed_events:
+        notes.append(fixed_events[(m, d)])
+
+    # Tetingkap musim perayaan & cuti sekolah Malaysia
+    if m == 2 and 10 <= d <= 25:
+        notes.append("Suasana musim perayaan Tahun Baru Cina & cuti panjang.")
+    elif m in (3, 4) and d <= 20:
+        notes.append("Suasana musim Ramadan / Syawal — ramai berkumpul bersama keluarga dan sepupu di kampung.")
+    elif m == 10 and d >= 20 or (m == 11 and d <= 12):
+        notes.append("Suasana musim perayaan Deepavali & cuti perayaan.")
+
+    if m in (11, 12):
+        notes.append("Musim cuti sekolah hujung tahun & musim hujan monsun di Malaysia — paling ngam lepak dalam rumah layan PS2.")
+    elif m in (5, 6) and d <= 15:
+        notes.append("Musim cuti pertengahan tahun sekolah di Malaysia.")
+
+    if wd == 4 and now.hour >= 18:
+        notes.append("Malam minggu (Jumaat malam) — waktu paling ramai geng PS2 buat marathon game sampai lewat.")
+    elif wd in (5, 6):
+        notes.append("Hujung minggu (Sabtu/Ahad) — masa lapang santai tanpa fikir kerja atau sekolah.")
+
+    return " | ".join(notes) if notes else "Hari biasa — suasana santai komuniti retro gaming Malaysia."
+
+
 def get_myt_calendar_context() -> Dict[str, Any]:
     now = datetime.now(tz=MYT)
     days_bm = ["Isnin", "Selasa", "Rabu", "Khamis", "Jumaat", "Sabtu", "Ahad"]
@@ -225,22 +309,37 @@ def get_myt_calendar_context() -> Dict[str, Any]:
     week_of_month = ((now.day - 1) // 7) + 1
     hour = now.hour
 
+    # Kitaran 3 Persona AI berbeza setiap 2 hari (48 jam)
+    day_of_year = now.timetuple().tm_yday
+    persona_cycle = THREE_PERSONA_CYCLES[(day_of_year // 2) % len(THREE_PERSONA_CYCLES)]
+
     if 5 <= hour < 12:
         period = "Pagi"
-        forbidden_times = "petang ni, malam ni, tengah malam"
+        allowed_time_cues = "pagi ni, awal pagi ni, pagi-pagi ni, hari ni"
+        forbidden_times = "tengah hari ni, petang ni, petang tadi, malam ni, malam tadi, tengah malam"
+        forbidden_regex = r"(tengah hari ni|petang ni|petang tadi|malam ni|malam tadi|tengah malam)"
     elif 12 <= hour < 15:
         period = "Tengah Hari"
-        forbidden_times = "pagi yang cerah, malam ni, tengah malam"
+        allowed_time_cues = "tengah hari ni, waktu rehat ni, hari ni"
+        forbidden_times = "pagi ni, pagi tadi, selamat pagi, petang ni, malam ni, tengah malam"
+        forbidden_regex = r"(pagi ni|pagi ini|pagi tadi|selamat pagi|petang ni|malam ni|tengah malam)"
     elif 15 <= hour < 19:
         period = "Petang"
-        forbidden_times = "pagi yang cerah, selamat pagi, pagi ini, tengah malam"
+        allowed_time_cues = "petang ni, lepas kerja petang ni, hari ni"
+        forbidden_times = "pagi ni, pagi tadi, selamat pagi, tengah hari ni, malam ni, tengah malam"
+        forbidden_regex = r"(pagi ni|pagi ini|pagi tadi|selamat pagi|tengah hari ni|malam ni|tengah malam)"
     elif 19 <= hour <= 23:
         period = "Malam"
-        forbidden_times = "pagi yang cerah, selamat pagi, pagi ini, tengah malam"
+        allowed_time_cues = "malam ni, malam-malam macam ni, waktu malam ni"
+        forbidden_times = "pagi ni, pagi ini, pagi tadi, selamat pagi, pagi yang cerah, tengah hari ni, petang ni, tengah malam ni"
+        forbidden_regex = r"(pagi ni|pagi ini|pagi tadi|selamat pagi|pagi yang cerah|tengah hari ni|petang ni|tengah malam ni)"
     else:
         period = "Tengah Malam"
-        forbidden_times = "pagi yang cerah, selamat pagi, petang ni"
+        allowed_time_cues = "lewat malam ni, tengah malam ni, awal pagi ni"
+        forbidden_times = "pagi yang cerah, selamat pagi, tengah hari ni, petang ni, petang tadi"
+        forbidden_regex = r"(pagi yang cerah|selamat pagi|tengah hari ni|petang ni|petang tadi)"
 
+    special_occasion = get_malaysia_special_occasion(now)
     full_ts = (
         f"{day_name}, {now.day:02d} {month_name} {now.year} | "
         f"{now.strftime('%I:%M %p')} MYT (Waktu {period} | Minggu ke-{week_of_month})"
@@ -252,26 +351,41 @@ def get_myt_calendar_context() -> Dict[str, Any]:
         "month_name": month_name,
         "year": now.year,
         "period": period,
+        "allowed_time_cues": allowed_time_cues,
         "forbidden_times": forbidden_times,
+        "forbidden_regex": forbidden_regex,
+        "special_occasion": special_occasion,
         "full_timestamp": full_ts,
+        "persona_cycle": persona_cycle,
     }
 
-
+# ==============================================================================
+# 2. OTAK MEMORI SQLITE3 PINTAR (< 30 MB AUTO-SPLIT & 60-HARI ANTI-DUPLIKASI)
+# ==============================================================================
 class RedditPostCoordinator:
     """
-    Menguruskan pangkalan data sejarah Reddit tempatan, kunci anti-ulangan Redis
-    berawalan 'reddit' (`ps2n_reddit:...`), penapis semantik Vector (`ps2n_reddit:...`),
-    serta arkib Backblaze B2 melalui Cloudflare Worker Proxy.
+    Menguruskan:
+    1. Pangkalan data SQLite3 tempatan (`data/ps2_reddit_posts_history.db`) dengan
+       pengawal saiz pintar (< 30 MB per fail): jika saiz fail mencecah 26 MB,
+       50% rekod tertua dipecahkan automatik ke `ps2_reddit_posts_history_partNNN.db`
+       dan fail utama di-VACUUM supaya sentiasa ringan untuk git push.
+    2. Penapisan 100% anti-ulangan dalam tempoh 60 hari bagi:
+       - Cincangan SHA-256 setiap gambar (`image_sha256_list`)
+       - ID pos Reddit (`reddit_post_id`) & cincangan tajuk asal (`title_sha256`)
+       - Cincangan & vektor ayat cerita Bahasa Melayu (`story_hash`)
+    3. Pembacaan otak memori daripada `.db` sedia ada (`ps2_games_catalog.db`,
+       `ps2_shopee_products.db`, `ps2_text_posts_history.db`, dan sejarah Reddit).
     """
 
     def __init__(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
         WORK_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        self._init_db(REDDIT_HISTORY_DB_PATH)
+        self.enforce_sqlite_size_guard()
 
-    def _init_db(self) -> None:
-        conn = sqlite3.connect(str(REDDIT_HISTORY_DB_PATH))
+    def _init_db(self, db_path: Path) -> None:
+        conn = sqlite3.connect(str(db_path))
         try:
             conn.execute(
                 """
@@ -279,6 +393,7 @@ class RedditPostCoordinator:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_uid TEXT NOT NULL UNIQUE,
                     reddit_post_id TEXT NOT NULL,
+                    title_sha256 TEXT DEFAULT '',
                     subreddit TEXT NOT NULL,
                     reddit_title TEXT NOT NULL,
                     reddit_permalink TEXT DEFAULT '',
@@ -286,9 +401,11 @@ class RedditPostCoordinator:
                     posted_epoch INTEGER NOT NULL,
                     run_env TEXT NOT NULL,
                     persona_ref TEXT NOT NULL,
+                    persona_cycle_id TEXT DEFAULT '',
                     mood_id TEXT NOT NULL,
                     image_source_type TEXT NOT NULL,
                     image_count INTEGER NOT NULL,
+                    image_sha256_list TEXT DEFAULT '[]',
                     ocr_summary TEXT DEFAULT '',
                     story_bm TEXT NOT NULL,
                     post_caption TEXT NOT NULL,
@@ -303,36 +420,278 @@ class RedditPostCoordinator:
                 )
                 """
             )
+            # Naik taraf lajur jika fail .db versi lama sudah wujud
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(reddit_post_history)").fetchall()
+            }
+            for col_name, col_def in (
+                ("title_sha256", "TEXT DEFAULT ''"),
+                ("persona_cycle_id", "TEXT DEFAULT ''"),
+                ("image_sha256_list", "TEXT DEFAULT '[]'"),
+            ):
+                if col_name not in existing_cols:
+                    conn.execute(f"ALTER TABLE reddit_post_history ADD COLUMN {col_name} {col_def}")
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rph_epoch ON reddit_post_history(posted_epoch DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rph_rid ON reddit_post_history(reddit_post_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_rph_story_hash ON reddit_post_history(story_hash)")
             conn.commit()
         finally:
             conn.close()
 
-    def is_reddit_post_already_used(self, reddit_post_id: str) -> bool:
-        if not reddit_post_id:
-            return False
-        # 1. Semak kunci Redis berawalan reddit (`ps2n_reddit:dedup:reddit_id:{id}`)
-        is_dup, _ = reddit_redis.is_duplicate_fingerprint(f"reddit_id:{reddit_post_id}")
-        if is_dup:
-            return True
-
-        # 2. Semak SQLite tempatan
+    def _list_all_history_dbs(self) -> List[Path]:
+        """Memulangkan fail DB aktif diikuti fail pecahan arkib terkini (jika ada)."""
+        dbs: List[Path] = []
         if REDDIT_HISTORY_DB_PATH.exists():
-            conn = sqlite3.connect(str(REDDIT_HISTORY_DB_PATH))
+            dbs.append(REDDIT_HISTORY_DB_PATH)
+        shards = sorted(DATA_DIR.glob("ps2_reddit_posts_history_part*.db"), reverse=True)
+        dbs.extend(shards)
+        return dbs
+
+    def enforce_sqlite_size_guard(self) -> Dict[str, Any]:
+        """
+        Memastikan setiap fail .db di folder data/ kekal di bawah 30 MB untuk GitHub.
+        Jika fail utama mencecah 26 MB:
+          1. Jalankan checkpoint & VACUUM.
+          2. Jika masih >= 26 MB, pindahkan 50% rekod tertua ke fail pecahan baharu
+             `ps2_reddit_posts_history_partNNN.db` dan padam dari fail utama.
+          3. Padam rekod terlalu tua (> 150 hari) atau lebihan shard lama jika perlu.
+        """
+        if not REDDIT_HISTORY_DB_PATH.exists():
+            return {"status": "NEW_DB", "size_mb": 0.0}
+
+        cur_size = REDDIT_HISTORY_DB_PATH.stat().st_size
+        if cur_size < SQLITE_MAX_SAFE_BYTES:
+            return {"status": "OK_UNDER_30MB", "size_mb": round(cur_size / (1024 * 1024), 2)}
+
+        conn = sqlite3.connect(str(REDDIT_HISTORY_DB_PATH))
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+
+        cur_size = REDDIT_HISTORY_DB_PATH.stat().st_size
+        if cur_size < SQLITE_MAX_SAFE_BYTES:
+            return {"status": "VACUUMED_OK", "size_mb": round(cur_size / (1024 * 1024), 2)}
+
+        # Split 50% rekod tertua ke fail pecahan arkib baharu
+        existing_shards = sorted(DATA_DIR.glob("ps2_reddit_posts_history_part*.db"))
+        next_idx = len(existing_shards) + 1
+        shard_path = DATA_DIR / f"ps2_reddit_posts_history_part{next_idx:03d}.db"
+        self._init_db(shard_path)
+
+        src_conn = sqlite3.connect(str(REDDIT_HISTORY_DB_PATH))
+        dst_conn = sqlite3.connect(str(shard_path))
+        try:
+            total_rows = int(src_conn.execute("SELECT COUNT(*) FROM reddit_post_history").fetchone()[0])
+            move_count = max(1, total_rows // 2)
+            old_rows = src_conn.execute(
+                "SELECT * FROM reddit_post_history ORDER BY posted_epoch ASC LIMIT ?",
+                (move_count,),
+            ).fetchall()
+
+            if old_rows:
+                cols = [d[1] for d in src_conn.execute("PRAGMA table_info(reddit_post_history)").fetchall()]
+                non_id_cols = [c for c in cols if c != "id"]
+                id_idx = cols.index("id")
+                col_indices = [cols.index(c) for c in non_id_cols]
+                placeholders = ", ".join(["?"] * len(non_id_cols))
+                col_names_sql = ", ".join(non_id_cols)
+
+                ids_to_delete: List[int] = []
+                for r in old_rows:
+                    ids_to_delete.append(int(r[id_idx]))
+                    vals = [r[i] for i in col_indices]
+                    dst_conn.execute(
+                        f"INSERT OR IGNORE INTO reddit_post_history ({col_names_sql}) VALUES ({placeholders})",
+                        vals,
+                    )
+                dst_conn.commit()
+
+                src_conn.executemany("DELETE FROM reddit_post_history WHERE id = ?", [(i,) for i in ids_to_delete])
+                src_conn.commit()
+                src_conn.execute("VACUUM")
+                src_conn.commit()
+        finally:
+            src_conn.close()
+            dst_conn.close()
+
+        # Padam rekod terlalu tua (> 150 hari) atau lebihan fail pecahan lama supaya storan GitHub kekal kecil
+        all_shards = sorted(DATA_DIR.glob("ps2_reddit_posts_history_part*.db"))
+        while len(all_shards) > SQLITE_MAX_ARCHIVE_SHARDS:
+            oldest_shard = all_shards.pop(0)
+            oldest_shard.unlink(missing_ok=True)
+
+        new_size = REDDIT_HISTORY_DB_PATH.stat().st_size
+        return {
+            "status": "SPLIT_COMPLETED",
+            "new_active_size_mb": round(new_size / (1024 * 1024), 2),
+            "created_shard": shard_path.name,
+        }
+
+    def is_reddit_post_used_within_cooldown(
+        self,
+        reddit_post_id: str,
+        reddit_title: str,
+        now_epoch: int,
+    ) -> Tuple[bool, str]:
+        """Menyemak sama ada ID pos Reddit atau tajuk asal 100% sama dalam tempoh 60 hari."""
+        cutoff_epoch = now_epoch - (REDDIT_POST_COOLDOWN_DAYS * 86400)
+        norm_title = re.sub(r"\s+", " ", (reddit_title or "").strip().lower())
+        title_hash = hashlib.sha256(norm_title.encode("utf-8")).hexdigest() if norm_title else ""
+
+        # 1. Semak Redis (`ps2n_reddit`)
+        if reddit_post_id:
+            dup_id, _ = reddit_redis.is_duplicate_fingerprint(f"reddit_id:{reddit_post_id}")
+            if dup_id:
+                return True, f"ID Reddit '{reddit_post_id}' sudah digunakan (< 60 hari di Redis)."
+        if title_hash:
+            dup_t, _ = reddit_redis.is_duplicate_fingerprint(f"title_sha256:{title_hash}")
+            if dup_t:
+                return True, "Tajuk pos Reddit 100% sama sudah digunakan (< 60 hari di Redis)."
+
+        # 2. Semak SQLite (Fail Aktif + Pecahan Arkib)
+        for db_p in self._list_all_history_dbs()[:3]:
+            conn = sqlite3.connect(str(db_p))
             try:
                 row = conn.execute(
-                    "SELECT 1 FROM reddit_post_history WHERE reddit_post_id = ? LIMIT 1",
-                    (str(reddit_post_id),),
+                    """
+                    SELECT posted_epoch FROM reddit_post_history
+                    WHERE (reddit_post_id = ? OR (title_sha256 != '' AND title_sha256 = ?))
+                      AND posted_epoch > ?
+                    LIMIT 1
+                    """,
+                    (str(reddit_post_id), title_hash, cutoff_epoch),
                 ).fetchone()
                 if row:
-                    return True
+                    age_days = round((now_epoch - int(row[0])) / 86400.0, 1)
+                    return True, f"Pos/Tajuk Reddit sama pernah disiarkan {age_days} hari lalu (had 60 hari)."
             finally:
                 conn.close()
-        return False
 
-    def get_recent_reddit_posts(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Mengambil 10 post Reddit terakhir daripada Redis (`ps2n_reddit`) & SQLite."""
+        return False, "OK"
+
+    def are_images_used_within_60_days(
+        self,
+        image_paths: List[Path],
+        now_epoch: int,
+    ) -> Tuple[bool, List[str], str]:
+        """
+        Mengira SHA-256 setiap fail gambar dan memastikan tiada satu pun gambar
+        yang 100% sama pernah dipost dalam tempoh 60 hari (dibenarkan selepas 60 hari).
+        """
+        cutoff_epoch = now_epoch - (IMAGE_SHA256_COOLDOWN_DAYS * 86400)
+        hashes: List[str] = []
+
+        for p in image_paths:
+            if not p.exists():
+                continue
+            sha = compute_file_sha256(p)
+            hashes.append(sha)
+
+            # 1. Semak Redis (kunci SHA-256 gambar bertempoh 60 hari)
+            is_dup_r, _ = reddit_redis.is_duplicate_fingerprint(f"img_sha256:{sha}")
+            if is_dup_r:
+                return True, hashes, f"Gambar {p.name} (SHA256:{sha[:12]}...) sudah dipost dalam 60 hari (Redis)."
+
+        if not hashes:
+            return False, [], "Tiada hash gambar"
+
+        # 2. Semak SQLite (Fail Aktif + Pecahan Arkib) dalam julat 60 hari
+        for db_p in self._list_all_history_dbs()[:3]:
+            conn = sqlite3.connect(str(db_p))
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT posted_epoch, image_sha256_list
+                    FROM reddit_post_history
+                    WHERE posted_epoch > ? AND image_sha256_list != '[]'
+                    """,
+                    (cutoff_epoch,),
+                ).fetchall()
+                for posted_ep, raw_json in rows:
+                    try:
+                        past_hashes = set(json.loads(raw_json or "[]"))
+                        overlap = past_hashes.intersection(hashes)
+                        if overlap:
+                            age_days = round((now_epoch - int(posted_ep)) / 86400.0, 1)
+                            sample_h = next(iter(overlap))
+                            return (
+                                True,
+                                hashes,
+                                f"Gambar sama (SHA256:{sample_h[:12]}...) pernah dipost {age_days} hari lalu (had 60 hari).",
+                            )
+                    except Exception:
+                        continue
+            finally:
+                conn.close()
+
+        return False, hashes, "Lulus (Semua gambar unik dalam 60 hari)"
+
+    def fetch_brain_context_from_databases(
+        self,
+        topic_text: str,
+        recent_posts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Membaca data daripada fail-fail .db dalam folder data/ sebagai otak/memori AI:
+        - `ps2_games_catalog.db`: Cari maklumat trivia game jika tajuk game disebut.
+        - `ps2_text_posts_history.db`: Semak topik terbaharu daripada X11 supaya tidak bertindih.
+        - `ps2_reddit_posts_history.db`: Ringkasan topik & pembuka ayat terdahulu.
+        """
+        low_topic = topic_text.lower()
+        matched_game_fact = ""
+
+        # 1. Baca ps2_games_catalog.db
+        if GAMES_DB_PATH.exists():
+            conn = sqlite3.connect(str(GAMES_DB_PATH))
+            conn.row_factory = sqlite3.Row
+            try:
+                for row in conn.execute("SELECT * FROM ps2_games").fetchall():
+                    g = dict(row)
+                    g_title = str(g.get("title") or g.get("game_title") or "").strip()
+                    if g_title and len(g_title) >= 4 and g_title.lower() in low_topic:
+                        yr = g.get("release_year") or g.get("year") or ""
+                        genre = g.get("genre") or ""
+                        trivia = g.get("trivia") or g.get("description") or ""
+                        matched_game_fact = f"{g_title} ({yr}, {genre}): {str(trivia)[:160]}"
+                        break
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        # 2. Baca sejarah X11 (ps2_text_posts_history.db) jika wujud
+        x11_recent_topics: List[str] = []
+        if TEXT_HISTORY_DB_PATH.exists():
+            conn = sqlite3.connect(str(TEXT_HISTORY_DB_PATH))
+            try:
+                rows = conn.execute(
+                    "SELECT game_title, pillar_id FROM text_post_history ORDER BY posted_epoch DESC LIMIT 4"
+                ).fetchall()
+                for gt, pid in rows:
+                    x11_recent_topics.append(f"{gt} ({pid})")
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        # 3. Ringkasan 10 topik Reddit terdahulu (tanpa menyalin ayat penuh untuk elak prompt priming)
+        recent_topic_lines = [
+            f"{i}. [r/{rp.get('subreddit', 'ps2')} | {rp.get('mood_id', '-')}] {str(rp.get('reddit_title', '-'))[:72]}"
+            for i, rp in enumerate(recent_posts[:10], 1)
+        ]
+
+        return {
+            "matched_game_fact": matched_game_fact,
+            "x11_recent_topics": x11_recent_topics,
+            "recent_topic_summary": "\n".join(recent_topic_lines) if recent_topic_lines else "Tiada rekod terdahulu.",
+        }
+
+    def get_recent_reddit_posts(self, limit: int = 12) -> List[Dict[str, Any]]:
+        """Mengambil rekod terkini daripada Redis (`ps2n_reddit`) & SQLite."""
         records: List[Dict[str, Any]] = []
         seen_hashes = set()
 
@@ -354,8 +713,8 @@ class RedditPostCoordinator:
                 rows = conn.execute(
                     """
                     SELECT post_uid, reddit_post_id, subreddit, reddit_title,
-                           posted_at_iso, posted_epoch, persona_ref, mood_id,
-                           story_bm, story_hash, shopee_product_code,
+                           posted_at_iso, posted_epoch, persona_ref, persona_cycle_id,
+                           mood_id, story_bm, story_hash, shopee_product_code,
                            shopee_url, comment_variant_idx
                     FROM reddit_post_history
                     ORDER BY posted_epoch DESC
@@ -406,7 +765,7 @@ class RedditPostCoordinator:
         finally:
             conn.close()
 
-        recent_codes = [str(p.get("shopee_product_code", "")) for p in recent_posts[:4] if p.get("shopee_product_code")]
+        recent_codes = [str(p.get("shopee_product_code", "")) for p in recent_posts[:5] if p.get("shopee_product_code")]
         last_code = recent_codes[0] if recent_codes else ""
 
         non_repeat = [r for r in all_rows if r["product_code"] != last_code] or all_rows
@@ -433,9 +792,9 @@ class RedditPostCoordinator:
             for p in recent_posts
             if p.get("comment_variant_idx") is not None
         ]
-        total_vars = len(REDDIT_COMMENT_VARIATIONS_16)
+        total_vars = len(REDDIT_COMMENT_VARIATIONS_20)
         candidate_ids = [f"rvar_{i:02d}" for i in range(total_vars)]
-        exclude_ids = [f"rvar_{i:02d}" for i in used_indices[:8]]
+        exclude_ids = [f"rvar_{i:02d}" for i in used_indices[:12]]
 
         picked = reddit_redis.pick_least_used_item(
             pool_name="reddit_comment_variants",
@@ -445,9 +804,10 @@ class RedditPostCoordinator:
         if picked and picked.startswith("rvar_"):
             next_idx = int(picked.split("_")[1])
         else:
-            next_idx = random.randint(0, total_vars - 1)
+            avail = [i for i in range(total_vars) if i not in used_indices[:10]] or list(range(total_vars))
+            next_idx = random.choice(avail)
 
-        template = REDDIT_COMMENT_VARIATIONS_16[next_idx]
+        template = REDDIT_COMMENT_VARIATIONS_20[next_idx]
         url = str(product["shopee_url"]).strip()
         compat = str(product.get("compatibility", ""))
         tier = str(product.get("storage_tier", "")).replace("_", " ")
@@ -465,10 +825,6 @@ class RedditPostCoordinator:
         return f"{template.format(url=url)}\n\n{spec_note}", next_idx
 
     def upload_media_to_b2_proxy(self, local_paths: List[Path], post_uid: str) -> List[Dict[str, Any]]:
-        """
-        Memuat naik gambar terpilih ke Backblaze B2 melalui Cloudflare Worker Proxy
-        menggunakan CF_WORKER_B2_PROXY_STORAGE & PS2N_PROXY_SECRET daripada persekitaran.
-        """
         proxy_url = (
             getattr(cfg, "CF_WORKER_B2_PROXY_STORAGE", "")
             or os.getenv("CF_WORKER_B2_PROXY_STORAGE", "")
@@ -492,11 +848,11 @@ class RedditPostCoordinator:
             remote_key = f"reddit_media/{month_tag}/{post_uid}_{idx:02d}{p.suffix.lower()}"
             try:
                 if "local_path" in params and "remote_path" in params:
-                    res = b2_proxy.upload_file(local_path=str(p), remote_path=remote_key)
+                    res = b2_proxy.upload_file(local_path=p, remote_path=remote_key)
                 elif "file_path" in params and "remote_path" in params:
-                    res = b2_proxy.upload_file(file_path=str(p), remote_path=remote_key)
+                    res = b2_proxy.upload_file(file_path=p, remote_path=remote_key)
                 else:
-                    res = b2_proxy.upload_file(str(p), remote_key)
+                    res = b2_proxy.upload_file(p, remote_key)
                 uploaded.append({"file": p.name, "remote_key": remote_key, "result": res})
             except Exception as exc:
                 console.print(f"[yellow]⚠️ Amaran muat naik B2 ({p.name}): {exc}[/yellow]")
@@ -509,23 +865,29 @@ class RedditPostCoordinator:
         post_uid: str,
         b2_uploaded_media: List[Dict[str, Any]],
     ) -> None:
-        """Menyimpan rekod ke SQLite, Upstash Vector (`ps2n_reddit`), Redis (`ps2n_reddit`), & B2."""
+        """Menyimpan rekod ke SQLite (< 30MB), Upstash Vector (`ps2n_reddit`), Redis (`ps2n_reddit`), & B2."""
+        norm_title = re.sub(r"\s+", " ", record["reddit_title"].strip().lower())
+        title_sha256 = hashlib.sha256(norm_title.encode("utf-8")).hexdigest()
+        img_hashes: List[str] = record.get("image_sha256_list", [])
+
         # 1. SQLite Tempatan
         conn = sqlite3.connect(str(REDDIT_HISTORY_DB_PATH))
         try:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO reddit_post_history (
-                    post_uid, reddit_post_id, subreddit, reddit_title, reddit_permalink,
-                    posted_at_iso, posted_epoch, run_env, persona_ref, mood_id,
-                    image_source_type, image_count, ocr_summary, story_bm, post_caption,
-                    story_hash, shopee_product_code, shopee_url, comment_variant_idx,
-                    comment_text, fb_post_id, fb_comment_id, vector_shard
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    post_uid, reddit_post_id, title_sha256, subreddit, reddit_title,
+                    reddit_permalink, posted_at_iso, posted_epoch, run_env,
+                    persona_ref, persona_cycle_id, mood_id, image_source_type,
+                    image_count, image_sha256_list, ocr_summary, story_bm,
+                    post_caption, story_hash, shopee_product_code, shopee_url,
+                    comment_variant_idx, comment_text, fb_post_id, fb_comment_id, vector_shard
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     post_uid,
                     record["reddit_post_id"],
+                    title_sha256,
                     record["subreddit"],
                     record["reddit_title"],
                     record["reddit_permalink"],
@@ -533,9 +895,11 @@ class RedditPostCoordinator:
                     record["posted_epoch"],
                     record["run_env"],
                     record["persona_ref"],
+                    record.get("persona_cycle_id", ""),
                     record["mood_id"],
                     record["image_source_type"],
                     record["image_count"],
+                    json.dumps(img_hashes),
                     record["ocr_summary"],
                     record["story_bm"],
                     record["post_caption"],
@@ -552,6 +916,9 @@ class RedditPostCoordinator:
             conn.commit()
         finally:
             conn.close()
+
+        # Semak & pecahkan .db jika menghampiri 30 MB
+        self.enforce_sqlite_size_guard()
 
         # Kemas kini kaunter produk Shopee
         if SHOPEE_DB_PATH.exists():
@@ -589,8 +956,9 @@ class RedditPostCoordinator:
         except Exception as exc:
             console.print(f"[yellow]⚠️ Amaran simpan Vector reddit: {exc}[/yellow]")
 
-        # 3. Upstash Redis berawalan 'reddit' (`ps2n_reddit:...`)
+        # 3. Upstash Redis berawalan 'reddit' (TTL 60 hari supaya dibenarkan semula selepas 60 hari)
         try:
+            cooldown_60d_sec = EXACT_COOLDOWN_DAYS * 86400
             reddit_redis.save_published_post(
                 post_uid=f"reddit_{post_uid}",
                 post_meta={
@@ -604,18 +972,29 @@ class RedditPostCoordinator:
                     "mood_id": record["mood_id"],
                     "shopee_product_code": record["shopee_product_code"],
                     "shopee_url": record["shopee_url"],
+                    "image_sha256_list": img_hashes,
                     "b2_media": b2_uploaded_media,
                 },
                 dedup_fingerprint=f"reddit_story:{record['story_hash']}",
-                dedup_ttl_seconds=EXACT_COOLDOWN_DAYS * 86400,
+                dedup_ttl_seconds=cooldown_60d_sec,
             )
 
-            # Kunci ID pos Reddit selama 180 hari
             reddit_redis.mark_dedup_fingerprint(
                 f"reddit_id:{record['reddit_post_id']}",
                 post_uid=f"reddit_{post_uid}",
-                ttl_seconds=REDDIT_POST_SEEN_TTL_DAYS * 86400,
+                ttl_seconds=cooldown_60d_sec,
             )
+            reddit_redis.mark_dedup_fingerprint(
+                f"title_sha256:{title_sha256}",
+                post_uid=f"reddit_{post_uid}",
+                ttl_seconds=cooldown_60d_sec,
+            )
+            for sha in img_hashes:
+                reddit_redis.mark_dedup_fingerprint(
+                    f"img_sha256:{sha}",
+                    post_uid=f"reddit_{post_uid}",
+                    ttl_seconds=cooldown_60d_sec,
+                )
 
             reddit_redis.push_rolling_history(
                 record={
@@ -626,6 +1005,7 @@ class RedditPostCoordinator:
                     "posted_at_iso": record["posted_at_iso"],
                     "posted_epoch": record["posted_epoch"],
                     "persona_ref": record["persona_ref"],
+                    "persona_cycle_id": record.get("persona_cycle_id", ""),
                     "mood_id": record["mood_id"],
                     "story_bm": record["story_bm"],
                     "story_hash": record["story_hash"],
@@ -654,18 +1034,18 @@ class RedditPostCoordinator:
                 params = list(sig.parameters.keys())
                 remote_key = f"logs/reddit_posts/{month_tag}/{tmp_log.name}"
                 if "local_path" in params and "remote_path" in params:
-                    b2_proxy.upload_file(local_path=str(tmp_log), remote_path=remote_key)
+                    b2_proxy.upload_file(local_path=tmp_log, remote_path=remote_key)
                 elif "file_path" in params and "remote_path" in params:
-                    b2_proxy.upload_file(file_path=str(tmp_log), remote_path=remote_key)
+                    b2_proxy.upload_file(file_path=tmp_log, remote_path=remote_key)
                 else:
-                    b2_proxy.upload_file(str(tmp_log), remote_key)
+                    b2_proxy.upload_file(tmp_log, remote_key)
                 tmp_log.unlink(missing_ok=True)
             except Exception:
                 pass
 
 
 # ==============================================================================
-# 2. ENJIN PENARIKAN REDDIT 4-LAPISAN & EKSTRAKSI KOMEN / GAMBAR
+# 3. ENJIN PENARIKAN REDDIT 4-LAPISAN & EKSTRAKSI KOMEN / GAMBAR
 # ==============================================================================
 def _fetch_url_text(url: str, headers: Dict[str, str], timeout: float = 15.0) -> Tuple[int, str, str]:
     try:
@@ -823,11 +1203,9 @@ def normalize_raw_submission(p: Dict[str, Any], engine_name: str) -> Optional[Di
 
 
 def harvest_reddit_ps2_candidates() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Menarik calon pos PS2 melalui Arctic Shift, PullPush, Direct JSON & RSS Fallback."""
     merged_by_id: Dict[str, Dict[str, Any]] = {}
     stats_list: List[Dict[str, Any]] = []
 
-    # 1. Arctic Shift Mirror API
     t0 = time.perf_counter()
     e1_posts: List[Dict[str, Any]] = []
     e1_code = 0
@@ -854,7 +1232,6 @@ def harvest_reddit_ps2_candidates() -> Tuple[List[Dict[str, Any]], List[Dict[str
     for p in e1_posts:
         merged_by_id[p["post_id"]] = p
 
-    # 2. PullPush Mirror API
     t1 = time.perf_counter()
     e2_posts: List[Dict[str, Any]] = []
     e2_code = 0
@@ -882,7 +1259,6 @@ def harvest_reddit_ps2_candidates() -> Tuple[List[Dict[str, Any]], List[Dict[str
         if p["post_id"] not in merged_by_id:
             merged_by_id[p["post_id"]] = p
 
-    # 3. Direct Multireddit JSON & RSS Fallback jika hasil mirror < 10
     if len(merged_by_id) < 10:
         multi = "+".join(CORE_PS2_SUBS)
         for tag, url in (
@@ -1015,7 +1391,7 @@ def fetch_top_reddit_comments(subreddit: str, post_id: str, max_comments: int = 
 
 
 # ==============================================================================
-# 3. MUAT TURUN 1-4 GAMBAR ANTI-403 & SANDARAN UNSPLASH
+# 4. MUAT TURUN 1-4 GAMBAR ANTI-403 & SANDARAN UNSPLASH
 # ==============================================================================
 def _download_single_image_resilient(candidate_urls: List[str]) -> Optional[bytes]:
     for raw_u in candidate_urls:
@@ -1089,13 +1465,13 @@ def fetch_unsplash_fallback_images(topic_title: str, count: int = 2) -> List[Pat
         resp = requests.get(
             "https://api.unsplash.com/search/photos",
             headers={"Authorization": f"Client-ID {api_key}", "Accept-Version": "v1"},
-            params={"query": query, "per_page": 8, "orientation": "landscape"},
+            params={"query": query, "per_page": 10, "orientation": "landscape"},
             timeout=20,
         )
         if resp.status_code == 200:
             results = resp.json().get("results", [])
             random.shuffle(results)
-            for idx, item in enumerate(results[: count + 3], 1):
+            for idx, item in enumerate(results[: count + 4], 1):
                 if len(saved) >= count:
                     break
                 dl_url = item.get("urls", {}).get("regular")
@@ -1113,7 +1489,7 @@ def fetch_unsplash_fallback_images(topic_title: str, count: int = 2) -> List[Pat
 
 
 # ==============================================================================
-# 4. PENAPIS SEMANTIK VECTOR & OLAHAN PERSONA AI (OCR + IDEA REDDIT)
+# 5. PENAPIS SEMANTIK VECTOR & OLAHAN PERSONA AI SANTAI (500 - 750 AKSARA)
 # ==============================================================================
 def check_reddit_semantic_cooldown(
     candidate_story: str,
@@ -1122,9 +1498,9 @@ def check_reddit_semantic_cooldown(
     now_epoch: int,
 ) -> Tuple[bool, str, int]:
     """
-    Menyemak jarak ulangan ayat menggunakan Upstash Vector (`ps2n_reddit`):
-    - Ayat >= 95% sama -> jarak minimum 60 hari (2 bulan)
-    - Ayat 75% - 80% sama -> jarak minimum 5 hari
+    Menyemak jarak ulangan ayat:
+    - Ayat 100% / >= 95% sama -> disekat selama 60 hari (dibenarkan selepas 60 hari)
+    - Ayat 78% sama -> disekat selama 5 hari
     """
     cand_norm = re.sub(r"\s+", " ", candidate_story.strip().lower())
     cand_hash = hashlib.sha256(cand_norm.encode("utf-8")).hexdigest()
@@ -1144,7 +1520,7 @@ def check_reddit_semantic_cooldown(
         prev_tokens = set(re.findall(r"\b[a-z0-9]{3,}\b", prev_story))
         if cand_tokens and prev_tokens:
             jaccard = len(cand_tokens & prev_tokens) / max(1, len(cand_tokens | prev_tokens))
-            if jaccard >= 0.75 and age_days < SIMILAR_COOLDOWN_DAYS:
+            if jaccard >= 0.78 and age_days < SIMILAR_COOLDOWN_DAYS:
                 return False, f"Ditolak: Pertindihan kata {jaccard*100:.0f}% dalam tempoh {age_days:.1f} hari (had 5 hari).", 0
 
     try:
@@ -1166,28 +1542,66 @@ def check_reddit_semantic_cooldown(
 
 
 def polish_malay_story_phrasing(text: str, self_ref: str, cal_ctx: Dict[str, Any]) -> str:
-    """Membersihkan frasa terjemahan janggal dan memastikan kata ganti nama kekal 'admin'/'min'."""
+    """Membersihkan frasa terjemahan janggal sambil mengekalkan nada santai semula jadi."""
     text = re.sub(r"^(cikgu|tuan|puan|bos)[,\s:!]+", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"\baku\b", self_ref, text, flags=re.IGNORECASE)
     text = re.sub(r"\bsaya\b", self_ref, text, flags=re.IGNORECASE)
     text = re.sub(rf"(^|[.!?]\s+){self_ref}\b", lambda m: f"{m.group(1)}{self_ref.capitalize()}", text)
 
-    # Betulkan frasa janggal jika AI tersasul terjemah literal
     awkward_fixes = {
         r"\bborak dan pelik\b": "renyah dan susah payah",
         r"\blambat mendongak\b": "mengambil masa agak lama",
         r"\bperangai pemilihan\b": "saingan undian",
         r"\bmelakar diri\b": "muncul",
+        r"\btengam\b": "tengok",
+        r"\binternet lautan\b": "internet laju",
     }
     for pat, rep in awkward_fixes.items():
         text = re.sub(pat, rep, text, flags=re.IGNORECASE)
 
-    # Selaraskan rujukan tengah malam jika waktu sekarang bukan tengah malam
     if cal_ctx.get("period") != "Tengah Malam":
         text = re.sub(r"\btengah malam ni\b", "malam ni", text, flags=re.IGNORECASE)
 
     text = re.sub(r"[^\x20-\x7E\n]", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def validate_relaxed_story_quality(
+    text: str,
+    min_len: int,
+    max_len: int,
+    cal_ctx: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """
+    Guardrail ringan supaya AI bebas bercerita dengan santai (500 - 750 aksara):
+    - Membenarkan tanda baca dan gaya sembang harian tanpa sekatan ketat.
+    - Hanya menyekat teks terlalu pendek/panjang, spam pengulangan melampau,
+      atau kebocoran pautan URL/harga RM di dalam kapsyen utama.
+    """
+    if not text or len(text) < min_len:
+        return False, f"Teks terlalu pendek ({len(text)}/{min_len} aksara)."
+    if len(text) > max_len:
+        return False, f"Teks melebihi had ({len(text)}/{max_len} aksara)."
+
+    low = text.lower()
+    if "http://" in low or "https://" in low or "shopee.com" in low:
+        return False, "Dikesan pautan URL dalam kapsyen utama."
+    if re.search(r"\brm\s?\d+", low):
+        return False, "Dikesan tanda harga RM dalam kapsyen utama."
+
+    words = re.findall(r"\b[a-z]{4,}\b", low)
+    freq: Dict[str, int] = {}
+    for w in words:
+        freq[w] = freq.get(w, 0) + 1
+        if freq[w] > 12:
+            return False, f"Glitch pengulangan melampau pada perkataan '{w}'."
+
+    if cal_ctx and cal_ctx.get("forbidden_regex"):
+        bad_time = re.search(cal_ctx["forbidden_regex"], low)
+        if bad_time:
+            return False, f"Ditolak: Perkataan waktu bercanggah dengan waktu {cal_ctx.get('period')} MYT ('{bad_time.group(0)}')."
+
+    return True, "Lulus Santai"
 
 
 def generate_reddit_persona_post(
@@ -1198,9 +1612,11 @@ def generate_reddit_persona_post(
     chosen_mood: Dict[str, str],
     product_rec: Dict[str, Any],
     recent_posts: List[Dict[str, Any]],
+    brain_ctx: Dict[str, Any],
     cal_ctx: Dict[str, Any],
 ) -> Tuple[bool, Dict[str, Any]]:
     self_ref = random.choice(["admin", "min"])
+    persona_cycle = cal_ctx["persona_cycle"]
 
     ocr_notes: List[str] = []
     for idx, v in enumerate(vision_items, 1):
@@ -1216,54 +1632,53 @@ def generate_reddit_persona_post(
         else "- Ramai peminat PS2 berkongsi pengalaman mengimbau era 2000-an."
     )
 
-    if recent_posts:
-        recent_lines = [
-            f"{i}. Topik lepas: [r/{rp.get('subreddit', 'ps2')} | {rp.get('mood_id', '-')}] {str(rp.get('reddit_title', '-'))[:75]}"
-            for i, rp in enumerate(recent_posts[:10], 1)
-        ]
-        recent_10_block = "\n".join(recent_lines)
-    else:
-        recent_10_block = "Belum ada rekod hantaran Reddit terdahulu."
+    game_fact_line = (
+        f"\nFAKTA KATALOG GAME (.DB): {brain_ctx['matched_game_fact']}"
+        if brain_ctx.get("matched_game_fact")
+        else ""
+    )
 
     system_prompt = (
-        f"Kau ialah '{self_ref}', seorang lelaki Malaysia berumur 35 tahun yang terpelajar, matang, "
-        "dan menjadi admin halaman Facebook 'PS2 Retro Nostalgia'. Kau sangat arif tentang konsol PlayStation 2, "
-        "perkakasan PS2 Fat/Slim, modchip Matrix, Mod Card FMCB/OpenTuna, serta sejarah game retro.\n\n"
-        f"MOOD PENCERITAAN SESI INI ({chosen_mood['label']}):\n"
+        f"Kau ialah '{self_ref}', seorang lelaki Malaysia berumur 35 tahun yang santai, berilmu, "
+        "dan mengendalikan halaman Facebook 'PS2 Retro Nostalgia'.\n\n"
+        f"WATAK KITARAN 2-HARI ({persona_cycle['title']}):\n"
+        f"{persona_cycle['style_note']}\n"
+        f"{persona_cycle['one_shot_anchor']}\n\n"
+        f"MOOD SESI INI ({chosen_mood['label']}):\n"
         f"{chosen_mood['instruction']}\n\n"
-        "TUGASAN UTAMA (OLAHAN ASLI — BUKAN TERJEMAHAN LITERAL):\n"
+        "PANDUAN BERCERITA SANTAI (500 - 750 AKSARA):\n"
         "1. Gabungkan intipati perbincangan komuniti luar negara dengan apa yang dilihat pada GAMBAR & TEKS OCR.\n"
-        "2. Jangan terjemah perkataan demi perkataan dari Bahasa Inggeris. Tulis semula dalam Bahasa Melayu Malaysia "
-        "yang semula jadi, kemas, dan sedap dibaca oleh peminat PS2 tempatan.\n"
-        f"3. Bahasakan diri HANYA sebagai '{self_ref}' (DILARANG guna 'aku' atau 'saya') dan sapa pembaca sebagai 'korang' atau 'geng'.\n"
-        f"4. Sekarang ialah WAKTU {cal_ctx['period'].upper()}. DILARANG menyebut waktu bercanggah ({cal_ctx['forbidden_times']}).\n"
-        "5. Selitkan secara halus (soft-sell) kelebihan menghidupkan semula PS2 lama guna pendrive/hardisk atau mod card "
-        "supaya pembaca berminat menyemak ruangan komen.\n\n"
-        "KAWALAN KETAT:\n"
-        "- Panjang cerita MESTI antara 510 hingga 630 aksara sahaja.\n"
-        "- DILARANG menulis tajuk/header di baris pertama, DILARANG sebut 'Gambar 1/2' atau 'Reddit', DILARANG emoji, "
-        "DILARANG perkataan Indonesia (bisa, banget, nggak, ngak, bikin, gampang, cobain, cocok, yuk, kalian, anda), "
-        "dan DILARANG letak harga RM atau link Shopee dalam cerita utama.\n"
-        "- Pastikan ayat berakhir dengan tanda noktah (.) yang lengkap."
+        "2. Tulis macam abang-abang bersembang santai di kedai kopi dalam Bahasa Melayu Malaysia yang natural "
+        "(JANGAN terjemah ayat Inggeris perkataan demi perkataan).\n"
+        f"3. Bahasakan diri sebagai '{self_ref}' (elakkan 'aku' atau 'saya') dan sapa pembaca sebagai 'korang' atau 'geng'.\n"
+        f"4. SEKARANG IALAH WAKTU {cal_ctx['period'].upper()} DI MALAYSIA ({cal_ctx['full_timestamp']}). "
+        f"Jika mahu sebut waktu, HANYA guna ungkapan sesuai seperti '{cal_ctx['allowed_time_cues']}'. "
+        f"HARAM sebut waktu bercanggah ({cal_ctx['forbidden_times']}).\n"
+        f"5. KONTEKS SUASANA & PERAYAAN MALAYSIA: {cal_ctx['special_occasion']}\n"
+        "5. Selitkan secara bersahaja (soft-sell) kelebihan menghidupkan semula PS2 lama guna pendrive/hardisk atau mod card "
+        "supaya pembaca tertarik menyemak ruangan komen.\n"
+        "6. Panjang cerita antara 520 hingga 720 aksara, tanpa emoji, tanpa tajuk di baris pertama, tanpa harga RM atau link, "
+        "dan pastikan ayat ditutup dengan noktah (.) yang lengkap."
     )
 
     user_prompt = (
-        f"MASA SIARAN: {cal_ctx['full_timestamp']}\n"
+        f"MASA SIARAN SEBENAR MALAYSIA: {cal_ctx['full_timestamp']}\n"
+        f"SUASANA & KALENDAR MALAYSIA: {cal_ctx['special_occasion']}\n"
         f"SUMBER IDEA KOMUNITI (r/{reddit_post['subreddit']}):\n"
         f"- Tajuk Asal: {reddit_post['title']}\n"
         f"- Huraian Asal: {reddit_post['cleaned_text'][:650] or 'Perkongsian visual setup & koleksi PS2.'}\n"
-        f"- Reaksi Komen Komuniti:\n{comments_block}\n\n"
+        f"- Reaksi Komen Komuniti:\n{comments_block}{game_fact_line}\n\n"
         f"DAPATAN VISION & OCR DARIPADA GAMBAR LAMPIRAN ({image_source_type}):\n"
         f"{vision_summary}\n\n"
-        f"KONTEKS PRODUK KOMEN PERTAMA (untuk selitan halus sahaja): {product_rec['product_name']}\n\n"
-        f"10 POSTING REDDIT TERAKHIR (JANGAN ULANG PEMBUKA AYAT & SUDUT YANG SAMA):\n"
-        f"{recent_10_block}\n\n"
-        f"Olah penceritaan asli daripada sudut pandang '{self_ref}' sepanjang 510 hingga 630 aksara tanpa emoji:"
+        f"KONTEKS PRODUK KOMEN PERTAMA (selitan halus sahaja): {product_rec['product_name']}\n\n"
+        f"REKOD TOPIK LEPAS (JANGAN ULANG SUDUT & PEMBUKA YANG SAMA):\n"
+        f"{brain_ctx['recent_topic_summary']}\n\n"
+        f"Tulis cerita santai daripada sudut pandang '{self_ref}' sepanjang 520 hingga 720 aksara tanpa emoji:"
     )
 
     last_meta: Dict[str, Any] = {}
     for attempt in range(1, 5):
-        adj_temp = min(0.92, round(STORY_TEMPERATURE + ((attempt - 1) * 0.04), 2))
+        adj_temp = min(0.86, round(STORY_TEMPERATURE + ((attempt - 1) * 0.04), 2))
         inf = llm_engine.generate_chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -1278,35 +1693,32 @@ def generate_reddit_persona_post(
         hashtags = f"#PS2RetroNostalgia #PS2Malaysia #RetroGaming #PlayStation2 #{sub_tag} #Nostalgia2000an"
         post_caption = f"{cleaned}\n\n{hashtags}"
 
-        # Semak supaya 12 patah perkataan pertama tidak meniru pembuka ayat post lepas
-        cand_open_words = re.findall(r"\b[a-z0-9]{3,}\b", cleaned.lower())[:12]
+        # Elakkan pembuka 5 perkataan pertama sebiji sama dengan post lepas
+        cand_open_5 = re.findall(r"\b[a-z0-9]{3,}\b", cleaned.lower())[:5]
         opening_cloned = False
         for prev in recent_posts[:10]:
-            prev_open_words = re.findall(r"\b[a-z0-9]{3,}\b", str(prev.get("story_bm", "")).lower())[:12]
-            if cand_open_words and prev_open_words:
-                overlap = len(set(cand_open_words) & set(prev_open_words)) / max(1, len(set(cand_open_words)))
-                if overlap >= 0.35 or cand_open_words[:4] == prev_open_words[:4]:
-                    opening_cloned = True
-                    break
+            prev_open_5 = re.findall(r"\b[a-z0-9]{3,}\b", str(prev.get("story_bm", "")).lower())[:5]
+            if len(cand_open_5) >= 4 and cand_open_5[:4] == prev_open_5[:4]:
+                opening_cloned = True
+                break
         if opening_cloned:
             last_meta = {
                 "attempt": attempt,
                 "elapsed_sec": inf["elapsed_sec"],
                 "tok_per_sec": inf["tok_per_sec"],
                 "story_chars": len(cleaned),
-                "status": "Ditolak: Pembuka ayat terlalu mirip post terdahulu.",
+                "status": "Ditolak: 4 perkataan pembuka sama dengan post terdahulu.",
             }
             continue
 
-        ok_q, q_msg = validate_story_quality(cleaned, min_len=STORY_MIN_CHARS, max_len=STORY_MAX_CHARS)
-        strict_ascii_re = re.compile(r"^[a-zA-Z0-9\s.,!?'\"\-\(\)/%:;&#]+$")
-        if not ok_q or not strict_ascii_re.match(post_caption) or "shopee" in post_caption.lower():
+        ok_q, q_msg = validate_relaxed_story_quality(cleaned, min_len=STORY_MIN_CHARS, max_len=STORY_MAX_CHARS, cal_ctx=cal_ctx)
+        if not ok_q:
             last_meta = {
                 "attempt": attempt,
                 "elapsed_sec": inf["elapsed_sec"],
                 "tok_per_sec": inf["tok_per_sec"],
                 "story_chars": len(cleaned),
-                "status": q_msg if not ok_q else "Dikesan simbol/pautan terlarang.",
+                "status": q_msg,
             }
             continue
 
@@ -1343,11 +1755,9 @@ def generate_reddit_persona_post(
 
 
 # ==============================================================================
-# 5. PENERBIT FACEBOOK GRAPH API v26.0 (1 FOTO / MULTI-FOTO + KOMEN PERTAMA)
+# 6. PENERBIT FACEBOOK GRAPH API v26.0 (1 FOTO / MULTI-FOTO + KOMEN PERTAMA)
 # ==============================================================================
 class FacebookRedditPhotoPublisher:
-    """Menerbitkan 1 foto atau album 2-4 foto ke halaman PS2 Retro Nostalgia + komen Shopee."""
-
     def __init__(self) -> None:
         self.app_secret: str = getattr(cfg, "PS2N_FB_APP_SECRET", "") or os.getenv("PS2N_FB_APP_SECRET", "")
         self.page_id: str = getattr(cfg, "PS2N_FB_PAGE_ID", "") or os.getenv("PS2N_FB_PAGE_ID", "")
@@ -1456,13 +1866,15 @@ def main() -> None:
 
     try:
         cal_ctx = get_myt_calendar_context()
+        persona_cycle = cal_ctx["persona_cycle"]
         coordinator = RedditPostCoordinator()
-        recent_posts = coordinator.get_recent_reddit_posts(limit=10)
+        recent_posts = coordinator.get_recent_reddit_posts(limit=12)
 
         console.print(
             Panel.fit(
                 "[bold cyan]PS2-RETRO-NOSTALGIA :: REDDIT PS2 + VISION OCR + FB PUBLISHER (X13)[/bold cyan]\n"
-                f"[dim]Persekitaran: {run_env} | {cal_ctx['full_timestamp']} | Memori Reddit: {len(recent_posts)} rekod[/dim]",
+                f"[dim]Persekitaran: {run_env} | {cal_ctx['full_timestamp']}\n"
+                f"Watak 2-Hari: {persona_cycle['title']} ({persona_cycle['persona_id']}) | Memori Reddit: {len(recent_posts)} rekod[/dim]",
                 border_style="cyan",
             )
         )
@@ -1484,69 +1896,117 @@ def main() -> None:
         )
         chosen_mood = mood_by_id.get(picked_mood_id or "", random.choice(slot_moods))
 
-        # 2. Tarik Calon Pos Reddit & Tapis yang Sudah Diguna (Redis + SQLite)
+        # 2. Tarik Calon Pos Reddit & Tapis yang Sudah Diguna dalam Tempoh 60 Hari
         with console.status("[bold cyan]Menarik calon pos PS2 dari komuniti Reddit & Mirror API...[/bold cyan]"):
-            all_cands, eng_stats = harvest_reddit_ps2_candidates()
+            all_cands, _ = harvest_reddit_ps2_candidates()
 
         if not all_cands:
             raise RuntimeError("Tiada pos sah berjaya ditarik daripada mana-mana sumber Reddit PS2.")
 
-        fresh_cands = [c for c in all_cands if not coordinator.is_reddit_post_already_used(c["post_id"])]
+        fresh_cands: List[Dict[str, Any]] = []
+        for c in all_cands:
+            is_used, _ = coordinator.is_reddit_post_used_within_cooldown(
+                reddit_post_id=c["post_id"],
+                reddit_title=c["title"],
+                now_epoch=cal_ctx["now_epoch"],
+            )
+            if not is_used:
+                fresh_cands.append(c)
+
         working_cands = fresh_cands if fresh_cands else all_cands
         working_cands.sort(
             key=lambda x: (1 if x["image_count"] > 0 else 0, x["curation_score"], x["num_comments"]),
             reverse=True,
         )
 
-        # Pilih secara rawak dari 4 calon terbaik supaya variasi topik sentiasa segar
-        chosen_post = random.choice(working_cands[: min(4, len(working_cands))])
-        top_comments = fetch_top_reddit_comments(chosen_post["subreddit"], chosen_post["post_id"], max_comments=5)
-
-        # 3. Muat Turun 1-4 Gambar (Reddit Asal atau Sandaran Unsplash) & Jalankan Vision OCR (X07)
+        # 3. Pilih Calon + Muat Turun Gambar + Semak 100% Anti-Duplikasi Gambar SHA-256 (60 Hari)
+        chosen_post: Optional[Dict[str, Any]] = None
         local_images: List[Path] = []
+        image_sha256_list: List[str] = []
         image_source_type = "REDDIT_ORIGINAL"
 
-        if not args.force_unsplash and chosen_post["image_slots"]:
-            with console.status("[bold cyan]Memuat turun gambar dari Reddit (Anti-403 Multi-Path)...[/bold cyan]"):
-                local_images = download_reddit_images(
-                    chosen_post["image_slots"],
-                    post_id=chosen_post["post_id"],
-                    max_images=4,
+        candidate_pool = working_cands[: min(10, len(working_cands))]
+        random.shuffle(candidate_pool[: min(4, len(candidate_pool))])
+
+        v_items: List[Dict[str, Any]] = []
+        v_meta: Dict[str, Any] = {}
+        try:
+            for cand in candidate_pool:
+                cand_imgs: List[Path] = []
+                cand_src_type = "REDDIT_ORIGINAL"
+
+                if not args.force_unsplash and cand["image_slots"]:
+                    cand_imgs = download_reddit_images(
+                        cand["image_slots"],
+                        post_id=cand["post_id"],
+                        max_images=4,
+                    )
+
+                if not cand_imgs:
+                    cand_src_type = "UNSPLASH_FALLBACK"
+                    cand_imgs = fetch_unsplash_fallback_images(cand["title"], count=2)
+
+                if not cand_imgs:
+                    continue
+
+                dup_img, img_hashes, dup_reason = coordinator.are_images_used_within_60_days(
+                    cand_imgs,
+                    now_epoch=cal_ctx["now_epoch"],
                 )
+                if dup_img:
+                    console.print(f"[yellow]⏭️ Langkau r/{cand['subreddit']} ({cand['post_id']}): {dup_reason}[/yellow]")
+                    for p_del in cand_imgs:
+                        p_del.unlink(missing_ok=True)
+                    continue
 
-        if not local_images:
-            image_source_type = "UNSPLASH_FALLBACK"
-            with console.status("[bold yellow]Menggunakan sandaran gambar Unsplash yang sepadan dengan topik...[/bold yellow]"):
-                local_images = fetch_unsplash_fallback_images(chosen_post["title"], count=2)
+                with console.status(f"[bold cyan]Menganalisis {len(cand_imgs)} gambar r/{cand['subreddit']} (Vision + OCR X07 < 30KB)...[/bold cyan]"):
+                    ok_v, items_v, meta_v = vision_analyzer.analyze_images(
+                        cand_imgs,
+                        context_hint=cand["title"],
+                        auto_unload=False,
+                        skip_failed=True,
+                    )
 
-        if not local_images:
-            raise RuntimeError("Gagal mendapatkan sebarang gambar daripada Reddit mahupun sandaran Unsplash.")
+                if not ok_v or not items_v:
+                    console.print(f"[yellow]⏭️ Langkau r/{cand['subreddit']} ({cand['post_id']}): Vision/OCR tidak sah, mencuba calon seterusnya...[/yellow]")
+                    for p_del in cand_imgs:
+                        p_del.unlink(missing_ok=True)
+                    continue
 
-        with console.status(f"[bold cyan]Menganalisis {len(local_images)} gambar menggunakan Vision + OCR (X07 < 30KB)...[/bold cyan]"):
-            v_ok, v_items, v_meta = vision_analyzer.analyze_images(
-                local_images,
-                context_hint=chosen_post["title"],
-                auto_unload=True,
-                skip_failed=True,
-            )
+                chosen_post = cand
+                local_images = cand_imgs
+                image_sha256_list = img_hashes
+                image_source_type = cand_src_type
+                v_items = items_v
+                v_meta = meta_v
+                break
+        finally:
+            vision_analyzer.unload()
 
-        if not v_ok or not v_items:
-            raise RuntimeError(f"Analisis Vision/OCR X07 gagal: {v_meta}")
+        if chosen_post is None or not local_images or not v_items:
+            raise RuntimeError("Tiada calon pos dengan gambar unik & analisis Vision/OCR sah ditemui pada sesi ini.")
+
+        top_comments = fetch_top_reddit_comments(chosen_post["subreddit"], chosen_post["post_id"], max_comments=5)
 
         if image_source_type == "UNSPLASH_FALLBACK":
             valid_imgs: List[Path] = []
+            valid_hashes: List[str] = []
             valid_v: List[Dict[str, Any]] = []
             for idx, v_obj in enumerate(v_items):
                 if v_obj.get("is_ps2_relevant", True) and not v_obj.get("has_human_face", False):
                     if idx < len(local_images):
                         valid_imgs.append(local_images[idx])
+                        if idx < len(image_sha256_list):
+                            valid_hashes.append(image_sha256_list[idx])
                         valid_v.append(v_obj)
             if valid_imgs:
                 local_images = valid_imgs
+                image_sha256_list = valid_hashes
                 v_items = valid_v
 
-        # 4. Padankan Produk Shopee & Olah Cerita Persona AI
+        # 5. Baca Otak Memori (.db) + Padankan Produk Shopee + Olah Cerita Santai (500-750 Aksara)
         combined_topic = f"{chosen_post['title']} {chosen_post['cleaned_text']} {' '.join(top_comments)}"
+        brain_ctx = coordinator.fetch_brain_context_from_databases(combined_topic, recent_posts=recent_posts)
         product_rec = coordinator.pick_rotating_shopee_product(combined_topic, recent_posts=recent_posts)
         comment_text, comment_var_idx = coordinator.build_rotating_first_comment(
             product=product_rec,
@@ -1558,13 +2018,13 @@ def main() -> None:
         plan_tbl.add_column("Pilihan Sesi Ini", style="cyan")
         plan_tbl.add_row("Subreddit & Sumber", f"r/{chosen_post['subreddit']} ({chosen_post['source_engine']})")
         plan_tbl.add_row("Tajuk Idea Reddit", chosen_post["title"][:72])
-        plan_tbl.add_row("Mood Persona AI", f"{chosen_mood['label']} ({chosen_mood['mood_id']})")
-        plan_tbl.add_row("Media & OCR", f"{len(local_images)} gambar ({image_source_type}) | {v_meta['inference_sec']}s")
+        plan_tbl.add_row("Watak 2-Hari & Mood", f"{persona_cycle['persona_id']} | {chosen_mood['mood_id']}")
+        plan_tbl.add_row("Media & SHA-256", f"{len(local_images)} gambar ({image_source_type}) | Unik 60-Hari")
         plan_tbl.add_row("Produk Shopee", f"{product_rec['product_code']} | {product_rec['compatibility']} | {product_rec['shopee_url']}")
-        plan_tbl.add_row("Variasi Komen", f"#{comment_var_idx + 1} daripada {len(REDDIT_COMMENT_VARIATIONS_16)} templat")
+        plan_tbl.add_row("Variasi Komen", f"#{comment_var_idx + 1} daripada {len(REDDIT_COMMENT_VARIATIONS_20)} templat")
         console.print(plan_tbl)
 
-        with console.status("[bold cyan]Mengolah cerita Persona AI ('admin'/'min') dengan semakan Vector...[/bold cyan]"):
+        with console.status("[bold cyan]Mengolah cerita santai Persona AI (500-750 aksara)...[/bold cyan]"):
             ok_gen, gen_pkg = generate_reddit_persona_post(
                 reddit_post=chosen_post,
                 top_comments=top_comments,
@@ -1573,12 +2033,13 @@ def main() -> None:
                 chosen_mood=chosen_mood,
                 product_rec=product_rec,
                 recent_posts=recent_posts,
+                brain_ctx=brain_ctx,
                 cal_ctx=cal_ctx,
             )
         llm_engine.unload()
 
         if not ok_gen:
-            raise RuntimeError(f"Gagal menjana cerita olahan sah: {gen_pkg}")
+            raise RuntimeError(f"Gagal menjana olahan cerita sah: {gen_pkg}")
 
         bm = gen_pkg["metrics"]
         console.print(
@@ -1594,7 +2055,7 @@ def main() -> None:
             )
         )
 
-        # 5. Terbit ke Facebook Page & Hantar Komen Pertama
+        # 6. Terbit ke Facebook Page & Hantar Komen Pertama
         fb_res = {"post_id": "DRY_RUN", "comment_id": "DRY_RUN"}
         if not args.dry_run:
             with console.status("[bold cyan]Menerbitkan foto & cerita ke Facebook Page + komen Shopee...[/bold cyan]"):
@@ -1627,10 +2088,13 @@ def main() -> None:
             "posted_epoch": cal_ctx["now_epoch"],
             "run_env": run_env,
             "persona_ref": gen_pkg["persona_ref"],
+            "persona_cycle_id": persona_cycle["persona_id"],
+            "pillar_id": f"{persona_cycle['persona_id']}:{chosen_mood['mood_id']}",
             "mood_id": chosen_mood["mood_id"],
             "game_title": f"r/{chosen_post['subreddit']}: {chosen_post['title'][:55]}",
             "image_source_type": image_source_type,
             "image_count": len(local_images),
+            "image_sha256_list": image_sha256_list,
             "ocr_summary": gen_pkg["ocr_summary"],
             "story_bm": gen_pkg["story_bm"],
             "story_chars": gen_pkg["story_chars"],
@@ -1654,7 +2118,7 @@ def main() -> None:
                 post_uid=post_uid,
                 b2_uploaded_media=b2_media_records,
             )
-            console.print("[bold green]✅ Rekod disimpan ke SQLite, Vector (ps2n_reddit), Redis (ps2n_reddit), & B2 Proxy.[/bold green]")
+            console.print("[bold green]✅ Rekod disimpan ke SQLite (<30MB), Vector (ps2n_reddit), Redis (ps2n_reddit), & B2 Proxy.[/bold green]")
 
         LAST_OUTPUT_JSON.write_text(json.dumps(final_record, indent=2, ensure_ascii=False), encoding="utf-8")
         console.print(f"[dim]Laporan JSON disimpan di: {LAST_OUTPUT_JSON}[/dim]")
