@@ -68,6 +68,8 @@ jobs:
 
       - name: 4. Checkout Repositori, Koleksi Muzik (assets/music) & Pangkalan Data (.db)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 5. Sediakan Python 3.12
         uses: actions/setup-python@v5
@@ -165,9 +167,9 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Gabungkan jurnal WAL SQLite ke fail utama sebelum commit
+          # Gabungkan jurnal WAL SQLite ke fail utama & padam fail sementara (-wal/-shm)
           python3 -c '
-          import glob, sqlite3
+          import glob, os, sqlite3
           for db_file in glob.glob("data/*.db"):
               try:
                   conn = sqlite3.connect(db_file)
@@ -175,6 +177,10 @@ jobs:
                   conn.close()
               except Exception:
                   pass
+              for ext in ("-wal", "-shm"):
+                  j = db_file + ext
+                  if os.path.exists(j):
+                      os.remove(j)
           '
 
           # Pantau semua fail binari SQLite (termasuk fail pecahan partNNN.db jika auto-split berlaku)
@@ -182,30 +188,34 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "cron(x17): sync reels sqlite history & shopee counters [skip ci]"
+          else
+            echo "ℹ️ Tiada perubahan rekod pangkalan data baharu untuk di-commit."
+            exit 0
+          fi
 
-            # Rebase automatik sekiranya remote mempunyai commit baharu semasa job berjalan
-            for i in 1 2 3; do
-              git fetch origin main
-              if git rebase origin/main; then
-                if git push origin main; then
-                  echo "✅ Berjaya sync pangkalan data .db (X17) ke GitHub!"
-                  exit 0
-                fi
-              else
-                git rebase --abort || true
-                git pull origin main --no-rebase -X ours -m "merge(x17): resolve sqlite history sync [skip ci]"
+          # Pastikan working tree 100% bersih sebelum rebase/merge dengan remote main
+          git checkout -- . 2>/dev/null || true
+
+          for i in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main; then
+              if git push origin main; then
+                echo "✅ Berjaya rebase & sync pangkalan data .db (X17) ke GitHub!"
+                exit 0
+              fi
+            else
+              git rebase --abort 2>/dev/null || true
+              if git merge -X ours --no-edit origin/main; then
                 if git push origin main; then
                   echo "✅ Berjaya merge & push pangkalan data .db (X17) ke GitHub!"
                   exit 0
                 fi
               fi
-              echo "⚠️ Percubaan $i gagal kerana remote berubah, mencuba semula..."
-              sleep 2
-            done
-            exit 1
-          else
-            echo "ℹ️ Tiada perubahan rekod pangkalan data dikesan."
-          fi
+            fi
+            echo "⚠️ Percubaan $i gagal kerana remote berubah, mencuba semula..."
+            sleep 2
+          done
+          exit 1
 
       - name: 12. Muat Naik Laporan JSON Hantaran X17
         if: always()

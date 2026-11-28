@@ -1,0 +1,110 @@
+name: TEST - X17 Fast SQLite Auto-Commit & Auto-Rebase Safe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-sqlite-commit-rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 1. Checkout Repositori Penuh
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. Sediakan Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 3. Simulasi Kemas Kini Rekod SQLite (data/ps2_reels_posts_history.db)
+        run: |
+          python3 - <<'EOF'
+          import os, sqlite3
+          from datetime import datetime, timezone, timedelta
+
+          os.makedirs("data", exist_ok=True)
+          db_path = "data/ps2_reels_posts_history.db"
+          myt_now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+          run_id = os.getenv("GITHUB_RUN_ID", "local_test")
+
+          conn = sqlite3.connect(db_path)
+          conn.execute("""
+              CREATE TABLE IF NOT EXISTS ci_rebase_sync_test (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  tested_at_myt TEXT NOT NULL,
+                  github_run_id TEXT NOT NULL
+              )
+          """)
+          conn.execute(
+              "INSERT INTO ci_rebase_sync_test (tested_at_myt, github_run_id) VALUES (?, ?)",
+              (myt_now, run_id),
+          )
+          conn.execute(
+              "DELETE FROM ci_rebase_sync_test WHERE id NOT IN "
+              "(SELECT id FROM ci_rebase_sync_test ORDER BY id DESC LIMIT 5)"
+          )
+          conn.commit()
+          conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+          conn.close()
+          print(f"✅ Rekod ujian SQLite ditulis pada {myt_now} (Run ID: {run_id})")
+          EOF
+
+      - name: 4. Uji Auto-Commit & Auto-Rebase Safe ke Branch Main
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          python3 -c '
+          import glob, os, sqlite3
+          for db_file in glob.glob("data/*.db"):
+              try:
+                  conn = sqlite3.connect(db_file)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                  conn.close()
+              except Exception:
+                  pass
+              for ext in ("-wal", "-shm"):
+                  j = db_file + ext
+                  if os.path.exists(j):
+                      os.remove(j)
+          '
+
+          git add -f data/*.db 2>/dev/null || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "test(ci): verify sqlite auto-commit & auto-rebase safe [skip ci]"
+          else
+            echo "⚠️ Tiada perubahan SQLite dikesan untuk di-commit."
+            exit 1
+          fi
+
+          git checkout -- . 2>/dev/null || true
+
+          for i in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main; then
+              if git push origin main; then
+                echo "✅ UJIAN BERJAYA: Auto-commit & auto-rebase selamat berfungsi 100%!"
+                git log -n 3 --oneline
+                exit 0
+              fi
+            else
+              git rebase --abort 2>/dev/null || true
+              if git merge -X ours --no-edit origin/main; then
+                if git push origin main; then
+                  echo "✅ UJIAN BERJAYA (Merge Fallback): Auto-commit & push selesai!"
+                  git log -n 3 --oneline
+                  exit 0
+                fi
+              fi
+            fi
+            echo "⚠️ Percubaan $i gagal kerana remote berubah, mencuba semula..."
+            sleep 2
+          done
+          exit 1

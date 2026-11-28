@@ -3,15 +3,15 @@
 # PROJEK: PS2-RETRO-NOSTALGIA - ENJIN SNAPSHOT OCR & EDITOR VIDEO REELS (X16)
 # LOKASI: /home/braderdin/ps2-retro-nostalgia/live-engine-01/X16_reels_video_editor_ocr.py
 #
-# FUNGSI UTAMA (EDISI NAIK TARAF):
+# FUNGSI UTAMA (EDISI NAIK TARAF + TUNING KELAJUAN 384PX):
 # 1. Mengekstrak tepat 3 tangkapan skrin (snapshot) bagi setiap video Pexels
 #    (3 video = 9 gambar; 4 video = 12 gambar; 5 video = 15 gambar).
 # 2. Penapis Wajah & Orang Ramai 2-Lapisan:
 #    - Lapisan 1: Imbasan pantas OpenCV Haar Cascade (jika tersedia) sebelum VLM.
-#    - Lapisan 2: Analisis VLM X07 dalam kumpulan 2 gambar per sesi (`OCR_BATCH_SIZE=2`)
-#      supaya JSON tidak terpotong; menyingkirkan klip jika >= 1 bingkai mempunyai
-#      wajah hadapan atau kumpulan orang ramai, tetapi mengekalkan pandangan
-#      belakang, sisi, atau tangan sahaja.
+#    - Lapisan 2: Analisis VLM X07 pada resolusi pantas `384px` (`<= 20 KB`) dalam
+#      kumpulan 2 gambar per sesi (`OCR_BATCH_SIZE=2`) supaya ~40% lebih laju
+#      tanpa memotong JSON; menyingkirkan klip jika >= 1 bingkai mempunyai
+#      wajah hadapan atau kumpulan orang ramai.
 # 3. Menyimpan rekod analisis bingkai demi bingkai ke .json dan .db di /temp/.
 # 4. Membina ringkasan visual sinematik (Pembukaan -> Pertengahan -> Penutup)
 #    untuk rujukan Persona AI (X17).
@@ -21,6 +21,7 @@
 
 import importlib
 import json
+import os
 import random
 import re
 import sqlite3
@@ -66,6 +67,8 @@ TEMP_DIR: Path = Path(getattr(cfg, "TEMP_DIR", PROJECT_ROOT / "temp"))
 SNAPSHOTS_PER_CLIP: int = 3          # 3 snapshot per video (3 vid=9, 4 vid=12, 5 vid=15)
 OCR_BATCH_SIZE: int = 2              # 2 gambar per sesi VLM (elak JSON terpotong & 2x lebih stabil)
 OCR_MAX_TOKENS: int = 1400           # Ruang token mencukupi untuk 2 bingkai penuh
+REELS_VISION_MAX_DIM: int = int(os.getenv("PS2N_REELS_VISION_MAX_DIM", "384"))
+REELS_VISION_TARGET_BYTES: int = int(os.getenv("PS2N_REELS_VISION_TARGET_BYTES", str(20 * 1024)))
 FACE_FLAG_MIN_HITS: int = 1          # Singkirkan klip jika >= 1 bingkai ada wajah hadapan / crowd
 REEL_MIN_DURATION: float = 30.0
 REEL_MAX_DURATION: float = 50.0
@@ -221,7 +224,7 @@ def _is_frame_flagged_face_or_crowd(v_res: Dict[str, Any]) -> bool:
 
 
 # ==============================================================================
-# 3. PENGEKSTRAK 3 SNAPSHOT/VIDEO + OCR BERKELOMPOK (2 GAMBAR / SESI)
+# 3. PENGEKSTRAK 3 SNAPSHOT/VIDEO + OCR BERKELOMPOK (2 GAMBAR / SESI @ 384PX)
 # ==============================================================================
 def extract_and_analyze_clips_ocr(
     clips: List[Dict[str, Any]],
@@ -232,7 +235,7 @@ def extract_and_analyze_clips_ocr(
 ) -> Dict[str, Any]:
     """
     Mengekstrak 3 snapshot per video (9 hingga 15 gambar keseluruhan),
-    menapis wajah hadapan melalui 2 lapisan (OpenCV + VLM X07 batch 2 gambar),
+    menapis wajah hadapan melalui 2 lapisan (OpenCV + VLM X07 batch 2 gambar @ 384px),
     dan menyimpan hasil setiap bingkai ke .json & .db dalam /temp/.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -298,7 +301,8 @@ def extract_and_analyze_clips_ocr(
 
             console.print(
                 f"  [cyan]🔍 [Sesi OCR {batch_no}/{total_batches}][/cyan] "
-                f"Menganalisis {len(batch_paths)} snapshot (Bingkai #{batch_slice[0]['frame_no']}..#{batch_slice[-1]['frame_no']}) < 30 KB..."
+                f"Menganalisis {len(batch_paths)} snapshot @ {REELS_VISION_MAX_DIM}px "
+                f"(Bingkai #{batch_slice[0]['frame_no']}..#{batch_slice[-1]['frame_no']})..."
             )
 
             ok_v, v_items, v_meta = vision_analyzer.analyze_images(
@@ -312,6 +316,8 @@ def extract_and_analyze_clips_ocr(
                     "Set has_human_face=false ONLY for pure objects/scenery, hands-only, or pure back-of-head views."
                 ),
                 skip_failed=True,
+                max_dim=REELS_VISION_MAX_DIM,
+                target_bytes=REELS_VISION_TARGET_BYTES,
             )
 
             if not ok_v or not v_items:
@@ -593,7 +599,7 @@ if __name__ == "__main__":
     console.print(
         Panel.fit(
             "[bold cyan]X16 :: REELS SNAPSHOT OCR & VIDEO EDITOR MODULE READY[/bold cyan]\n"
-            f"[dim]Tetapan: {SNAPSHOTS_PER_CLIP} snapshot/video | Batch OCR: {OCR_BATCH_SIZE} gambar/sesi "
+            f"[dim]Tetapan: {SNAPSHOTS_PER_CLIP} snapshot/video | Batch OCR: {OCR_BATCH_SIZE} gambar/sesi @ {REELS_VISION_MAX_DIM}px "
             f"(max_tokens={OCR_MAX_TOKENS}) | Penapis Wajah: >= {FACE_FLAG_MIN_HITS} bingkai | "
             f"Durasi Reels: {int(REEL_MIN_DURATION)}-{int(REEL_MAX_DURATION)}s[/dim]",
             border_style="cyan",

@@ -6,10 +6,10 @@
 # FUNGSI UTAMA:
 # 1. Memampatkan sebarang gambar (dari laluan fail tempatan, URL HTTP/Reddit/Imgur,
 #    PIL Image, atau bait mentah) supaya saiznya WAJIB < 30 KB (sasaran <= 28 KB).
-# 2. Menguatkuasakan had keras maksimum 5 gambar per permintaan kepada projektor
-#    multimodal Qwen3.5-4B-Q4_K_M.gguf + mmproj-F16.gguf dengan `repeat_penalty`
-#    supaya tidak tersangkut gelung ulangan pada gambar kolaj banyak teks.
-# 3. Dilengkapi Penyelamat JSON Terpotong (Salvage Parser) & 2x cubaan automatik.
+# 2. Menyokong pelarasan dimensi dinamik (`max_dim=512` untuk OCR teks tajam
+#    seperti X13/dokumen, atau `max_dim=384` untuk analisis babak video pantas X16).
+# 3. Menggunakan projektor multimodal Qwen3.5-4B-Q4_K_M.gguf + mmproj-F16.gguf
+#    dengan `n_threads_batch`, `repeat_penalty`, dan Penyelamat JSON 3-Lapisan.
 # 4. Pengesanan objek, teks OCR, kesesuaian PS2, pengesanan wajah manusia, dan
 #    pengkelasan kategori visual untuk X05_vector_sharded.py.
 # ==============================================================================
@@ -46,9 +46,9 @@ except Exception:
 
 
 # ==============================================================================
-# [BAHAGIAN TUNING MANUAL VISION & PEMAMPATAN] - UBAH NILAI DI SINI JIKA PERLU
+# [BAHAGIAN TUNING MANUAL VISION & PEMAMPATAN] - OPTIMUM CPU & GITHUB ACTIONS
 # ==============================================================================
-VISION_HARD_MAX_BYTES: int = 30 * 1024  # 30,720 bait (jangan ubah melebihi 30 KB)
+VISION_HARD_MAX_BYTES: int = 30 * 1024  # 30,720 bait (had keras < 30 KB)
 VISION_TARGET_BYTES: int = int(os.getenv("PS2N_VISION_TARGET_BYTES", str(28 * 1024)))
 VISION_INITIAL_MAX_DIM: int = int(os.getenv("PS2N_VISION_MAX_DIM", "512"))
 VISION_INITIAL_QUALITY: int = int(os.getenv("PS2N_VISION_INIT_QUALITY", "78"))
@@ -58,8 +58,8 @@ VISION_TEMPERATURE: float = float(os.getenv("PS2N_VISION_TEMP", "0.22"))
 VISION_TOP_P: float = float(os.getenv("PS2N_VISION_TOP_P", "0.90"))
 VISION_REPEAT_PENALTY: float = float(os.getenv("PS2N_VISION_REPEAT_PENALTY", "1.18"))
 VISION_MAX_TOKENS: int = int(os.getenv("PS2N_VISION_MAX_TOKENS", "960"))
-VISION_N_CTX: int = int(os.getenv("PS2N_VISION_N_CTX", "6144"))
-VISION_N_THREADS: int = int(os.getenv("PS2N_VISION_N_THREADS", str(min(4, max(3, os.cpu_count() or 4)))))
+VISION_N_CTX: int = int(os.getenv("PS2N_VISION_N_CTX", "3584"))
+VISION_N_THREADS: int = int(os.getenv("PS2N_VISION_N_THREADS", str(min(6, max(4, os.cpu_count() or 4)))))
 VISION_N_BATCH: int = int(os.getenv("PS2N_VISION_N_BATCH", "512"))
 VISION_KV_CACHE_TYPE: int = int(os.getenv("PS2N_VISION_KV_CACHE_TYPE", "8"))
 VISION_FLASH_ATTN: bool = os.getenv("PS2N_VISION_FLASH_ATTN", "true").lower() in ("1", "true", "yes")
@@ -290,7 +290,7 @@ def _extract_vision_items_resilient(cleaned_text: str, expected_count: int) -> L
             except Exception:
                 continue
 
-    # Lapisan 3: Penyelamat medan secara regex (apabila VLM ulang perkataan dalam ocr_text)
+    # Lapisan 3: Penyelamat medan secara regex
     salvaged: List[Dict[str, Any]] = []
     blocks = re.split(r'(?="image_number"\s*:)', cleaned_text)
     for blk in blocks:
@@ -299,16 +299,17 @@ def _extract_vision_items_resilient(cleaned_text: str, expected_count: int) -> L
             continue
         img_num = int(num_m.group(1))
 
-        # Ekstrak detected_objects unik
         objs: List[str] = []
         obj_m = re.search(r'"detected_objects"\s*:\s*\[([^\]]*)', blk)
         if obj_m:
             raw_objs = re.findall(r'"([^"]+)"', obj_m.group(1))
             objs = list(dict.fromkeys(x.strip() for x in raw_objs if x.strip()))[:6]
 
-        # Ekstrak semua token teks selepas "ocr_text": sehingga medan seterusnya
         ocr_str = "None"
-        ocr_m = re.search(r'"ocr_text"\s*:\s*([\s\S]*?)(?=,\s*"(?:console_platform|is_ps2_relevant|has_human_face|visual_category|retro_nostalgia_angle)"|\}|$)', blk)
+        ocr_m = re.search(
+            r'"ocr_text"\s*:\s*([\s\S]*?)(?=,\s*"(?:console_platform|is_ps2_relevant|has_human_face|visual_category|retro_nostalgia_angle)"|\}|$)',
+            blk,
+        )
         if ocr_m:
             tokens = re.findall(r'"([^"]{2,60})"', ocr_m.group(1))
             unique_tokens = list(dict.fromkeys(t.strip() for t in tokens if t.strip()))
@@ -350,11 +351,9 @@ def _normalize_vision_item(raw_item: Dict[str, Any], comp_meta: Dict[str, Any], 
         objs = [x.strip() for x in objs.split(",") if x.strip()]
     elif not isinstance(objs, list):
         objs = []
-    # Buang duplikasi objek berturut-turut (contoh: ["game_case", "game_case", ...])
     item["detected_objects"] = list(dict.fromkeys(str(x).strip() for x in objs if str(x).strip()))[:6]
 
     ocr_txt = str(item.get("ocr_text") or "None").strip()
-    # Buang pengulangan perkataan dalam ocr_text
     if "," in ocr_txt:
         parts = list(dict.fromkeys(p.strip() for p in ocr_txt.split(",") if p.strip()))
         ocr_txt = ", ".join(parts[:10])
@@ -450,6 +449,7 @@ class VisionOCRAnalyzer:
                 chat_handler=chat_handler,
                 n_ctx=n_ctx,
                 n_threads=n_threads,
+                n_threads_batch=n_threads,
                 n_batch=n_batch,
                 type_k=kv_cache_type,
                 type_v=kv_cache_type,
@@ -524,6 +524,8 @@ class VisionOCRAnalyzer:
         max_tokens: int = VISION_MAX_TOKENS,
         context_hint: str = "",
         skip_failed: bool = True,
+        max_dim: int = VISION_INITIAL_MAX_DIM,
+        target_bytes: int = VISION_TARGET_BYTES,
     ) -> Tuple[bool, List[Dict[str, Any]], Dict[str, Any]]:
         if not image_sources:
             return False, [], {"error": "Tiada sumber gambar diberikan."}
@@ -537,7 +539,12 @@ class VisionOCRAnalyzer:
             if save_compressed_dir is not None:
                 out_file = Path(save_compressed_dir) / f"vision_input_{idx:02d}.jpg"
 
-            c_ok, c_info = compress_image_under_30kb(src, save_path=out_file)
+            c_ok, c_info = compress_image_under_30kb(
+                src,
+                save_path=out_file,
+                target_bytes=target_bytes,
+                initial_max_dim=max_dim,
+            )
             if not c_ok:
                 err_msg = f"Gambar #{idx} gagal dimampat <30KB: {c_info.get('error')}"
                 if skip_failed:
@@ -567,13 +574,13 @@ class VisionOCRAnalyzer:
                 f"Analyze all {len(compressed_items)} attached images in order (Image 1 to Image {len(compressed_items)}).\n"
                 "Return ONLY a valid JSON object with key 'images' containing a list of objects, each having:\n"
                 "- image_number (integer 1..N)\n"
-                "- detected_objects (list of up to 5 UNIQUE items, e.g. ['console', 'controller', 'game_case'] — NO duplicate items)\n"
-                "- ocr_text (a single concise string under 120 chars listing UNIQUE visible game titles, brands, or model numbers — NO repeated words)\n"
+                "- detected_objects (list of up to 4 UNIQUE items, e.g. ['console', 'controller', 'game_case'] — NO duplicate items)\n"
+                "- ocr_text (a single concise string under 100 chars listing UNIQUE visible game titles, brands, or model numbers — NO repeated words)\n"
                 "- console_platform (string: 'PS2', 'PlayStation', 'CRT/Retro Setup', 'Nintendo/Other', or 'General Gaming')\n"
                 "- is_ps2_relevant (boolean: true ONLY if PS2, PlayStation, DualShock, CRT retro gaming, or USB/HDD gaming setup)\n"
                 "- has_human_face (boolean: true if a clear human face/portrait/selfie is visible, false otherwise)\n"
                 "- visual_category (one of: 'cat_controller', 'cat_console_setup', 'cat_multiplayer', 'cat_storage_tech', 'cat_reels_clip')\n"
-                "- retro_nostalgia_angle (1 short natural sentence in Bahasa Melayu Malaysia describing the scene)\n"
+                "- retro_nostalgia_angle (1 short natural sentence under 18 words in Bahasa Melayu Malaysia describing the scene)\n"
                 "Do not include markdown code fences or extra commentary.\n/no_think"
             )
 

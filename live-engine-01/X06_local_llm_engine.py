@@ -7,8 +7,8 @@
 # 1. Klien Singleton berpusat untuk model GGUF Qwen3.5-4B-Q4_K_M.gguf.
 # 2. Ditala khusus untuk Bahasa Melayu Malaysia yang santai, bersahaja, dan
 #    tidak kaku seperti terjemahan mesin (repeat_penalty=1.08, temp=0.64).
-# 3. Menyuntik panduan gaya bahasa Malaysia semula jadi secara automatik ke
-#    dalam semua panggilan cerita (X11, X13, dan modul masa hadapan).
+# 3. Dioptimumkan untuk CPU WSL (6 teras) & GitHub Actions (4 vCPU) dengan
+#    `n_ctx=2560` dan `n_threads_batch` tanpa mengurangkan `max_tokens`.
 # 4. Pembersih output AI: buang tag <think>, buang tajuk/header, buang emoji AI,
 #    tukar istilah Indonesia & frasa terjemahan janggal ke BM tempatan, dan
 #    potong kemas pada penghujung noktah ayat.
@@ -39,7 +39,7 @@ except Exception:
 
 
 # ==============================================================================
-# [BAHAGIAN TUNING MANUAL] - DITALA UNTUK BM SANTAI & SEMULA JADI
+# [BAHAGIAN TUNING MANUAL] - DITALA UNTUK BM SANTAI & KELAJUAN OPTIMUM CPU
 # ==============================================================================
 # 1. Kawalan Kreativiti & Kestabilan Bahasa Melayu (Elak Perkataan Pelik)
 DEFAULT_TEMPERATURE: float = float(os.getenv("PS2N_LLM_TEMP", "0.64"))
@@ -50,9 +50,9 @@ DEFAULT_REPEAT_PENALTY: float = float(os.getenv("PS2N_LLM_REPEAT_PENALTY", "1.08
 DEFAULT_PRESENCE_PENALTY: float = float(os.getenv("PS2N_LLM_PRESENCE_PENALTY", "0.05"))
 DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("PS2N_LLM_FREQUENCY_PENALTY", "0.05"))
 
-# 2. Kawalan Perkakasan & Memori (WSL 4 Threads / GitHub Actions Ubuntu Runner)
-DEFAULT_N_CTX: int = int(os.getenv("PS2N_LLM_N_CTX", "4096"))
-DEFAULT_N_THREADS: int = int(os.getenv("PS2N_LLM_N_THREADS", str(min(4, max(3, os.cpu_count() or 4)))))
+# 2. Kawalan Perkakasan & Memori (WSL 6 Threads / GitHub Actions Ubuntu Runner 4 vCPU)
+DEFAULT_N_CTX: int = int(os.getenv("PS2N_LLM_N_CTX", "2560"))
+DEFAULT_N_THREADS: int = int(os.getenv("PS2N_LLM_N_THREADS", str(min(6, max(4, os.cpu_count() or 4)))))
 DEFAULT_N_BATCH: int = int(os.getenv("PS2N_LLM_N_BATCH", "512"))
 DEFAULT_KV_CACHE_TYPE: int = int(os.getenv("PS2N_LLM_KV_CACHE_TYPE", "8"))  # 8 = Q8_0 (jimat RAM)
 DEFAULT_FLASH_ATTN: bool = os.getenv("PS2N_LLM_FLASH_ATTN", "true").lower() in ("1", "true", "yes")
@@ -316,6 +316,7 @@ class LocalLLMEngine:
                 model_path=model_path,
                 n_ctx=n_ctx,
                 n_threads=n_threads,
+                n_threads_batch=n_threads,
                 n_batch=n_batch,
                 type_k=kv_cache_type,
                 type_v=kv_cache_type,
